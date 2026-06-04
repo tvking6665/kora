@@ -183,4 +183,11 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                 display_df['5일 평균 거래량'] = display_df['5일 평균 거래량'].apply(lambda x: f"{x:,}")
                 display_df['최근일 거래량'] = display_df['최근일 거래량'].apply(lambda x: f"{x:,}")
                 
-                st.dataframe(display_df,
+                st.dataframe(display_df, use_container_width=True)
+            else:
+                st.info(f"선택하신 [{search_mode}] 조건에 만족하는 테마주가 현재 마켓에 없습니다. 세부 수치를 조절해 보세요!")
+                
+        except Exception as e:
+            st.error(f"데이터를 처리하는 중 에러가 발생했습니다: {e}")
+else:
+    st.info("왼쪽 사이드바에서 원하는 검색 조건을 선택하고 [검색기 돌리기] 버튼을 눌러주세요.")
