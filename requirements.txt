@@ -1,2 +1,3 @@
-pykrx
+finance-datareader
 pandas
+streamlit
