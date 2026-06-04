@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # 1. 웹 페이지 레이아웃 설정
-st.set_config = st.set_page_config(page_title="미국 전종목 실시간 검색기", layout="wide")
+st.set_page_config(page_title="미국 전종목 실시간 검색기", layout="wide")
 
 # ----------------- [로그인 시스템] -----------------
 if "logged_in" not in st.session_state:
@@ -48,6 +48,11 @@ search_mode = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 세부 수치 설정")
 
+# [에러 해결] 어떤 모드를 고르든 기본값을 미리 할당해두어 변수 미정의(NameError)를 완벽히 차단합니다.
+volume_ratio = 400
+min_turnover = 10
+min_change = 8
+
 if search_mode == "① 거래량 급증":
     volume_ratio = st.sidebar.slider("평균(5일) 대비 거래량 증가율 (%)", min_value=50, max_value=1000, value=400, step=50)
 elif search_mode == "② 대량 거래대금":
@@ -55,7 +60,7 @@ elif search_mode == "② 대량 거래대금":
 elif search_mode == "③ 당일 고상승률":
     min_change = st.sidebar.slider("당일 최소 상승률 조건 (%)", min_value=-10, max_value=30, value=8, step=1)
 
-# 미국 시장 주요 활성 종목 풀 구성 (속도를 위해 가장 핫한 80개 주력 테마주 타겟팅)
+# 미국 시장 주요 활성 종목 풀 구성 (속도를 위해 주력 테마 성장주 타겟팅)
 @st.cache_data(ttl=3600)
 def get_all_us_tickers():
     hot_growth = {
@@ -72,25 +77,20 @@ def get_all_us_tickers():
 
 # 3. 데이터 수집 및 조건 필터링 가동
 if st.sidebar.button("검색기 돌리기 🚀"):
-    # 현재 시간 가시화
     now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with st.spinner(f"♻️ {now_time} 현재 시점 실시간 가격 정보 스캔 중..."):
         try:
             ticker_map = get_all_us_tickers()
             tickers_list = list(ticker_map.keys())
             
-            # [핵심 변경] 차트 다운로드가 아니라 전 종목의 '현재 1초 전 데이터 오브젝트'를 다이렉트로 호출!
             tickers_obj = yf.Tickers(' '.join(tickers_list))
-            
             results = []
             
             for ticker in tickers_list:
                 try:
-                    # 각 종목의 실시간 정보(info) 딕셔너리 추출
                     info = tickers_obj.tickers[ticker].info
                     
-                    # 프리마켓과 본장을 모두 아우르는 실시간 가격(currentPrice 또는 ask/bid) 추출
-                    # yfinance가 장외시간에 제공하는 preMarketPrice를 최우선으로 잡습니다.
+                    # 실시간 현재가 추출 (프리마켓 호가 연동)
                     current_price = info.get('preMarketPrice') or info.get('currentPrice') or info.get('regularMarketPrice')
                     prev_close = info.get('previousClose')
                     current_vol = info.get('regularMarketVolume') or info.get('volume', 0)
@@ -101,17 +101,13 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                     if current_price < 1.0: # 동전주 제외
                         continue
 
-                    # 1. 실시간 상승률 계산 (현재가 vs 전일본장종가)
+                    # 지표 계산
                     day_change_pct = round(((current_price - prev_close) / prev_close) * 100, 2)
-                    
-                    # 2. 실시간 거래대금 계산 ($M)
                     turnover_m = round((current_price * current_vol) / 1_000_000, 2)
-                    
-                    # 3. 평균 거래량 확보용 (이것만 과거 데이터 살짝 참고)
                     five_day_avg_vol = info.get('averageVolume') or info.get('averageVolume10days', 1)
                     vol_ratio_calc = round((current_vol / five_day_avg_vol) * 100, 2) if five_day_avg_vol > 0 else 0
                     
-                    # 현재 라디오 버튼 조건 필터링
+                    # 단일 선택 조건 매칭
                     is_match = False
                     if search_mode == "① 거래량 급증" and vol_ratio_calc >= volume_ratio:
                         is_match = True
@@ -132,7 +128,7 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                             '거래량 증가율(%)': vol_ratio_calc
                         })
                 except:
-                    continue # 특정 종목 오류 시 패스
+                    continue
                     
             if results:
                 result_df = pd.DataFrame(results)
@@ -157,7 +153,7 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                 
                 st.dataframe(display_df, use_container_width=True)
             else:
-                st.info(f"현재 실시간 마켓에 {min_change}% 조건 이상으로 움직이는 종목이 없습니다. 장외 시간이거나 변동성이 적은 상태입니다.")
+                st.info(f"현재 실시간 마켓에 선택하신 조건을 충족하는 종목이 없습니다. 수치를 조절하거나 시장 개장 상태를 확인해 주세요.")
                 
         except Exception as e:
             st.error(f"실시간 데이터 수집 오류: {e}")
