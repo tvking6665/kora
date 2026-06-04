@@ -107,3 +107,40 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                                 '종가 ($)': latest_close,
                                 '당일 상승률': day_change_pct,
                                 '당일 거래대금': turnover_m,
+                                '5일 평균 거래량': int(five_day_avg_vol),
+                                '최근일 거래량': int(latest_vol),
+                                '거래량 증가율(%)': vol_ratio_calc
+                            })
+            
+            # 결과 시각화
+            if results:
+                result_df = pd.DataFrame(results)
+                
+                # 정렬 기준도 내가 고른 메뉴에 맞춰서 똑똑하게 변경됩니다.
+                if search_mode == "① 거래량 급증":
+                    result_df = result_df.sort_values(by='거래량 증가율(%)', ascending=False)
+                elif search_mode == "② 대량 거래대금":
+                    result_df = result_df.sort_values(by='당일 거래대금', ascending=False)
+                elif search_mode == "③ 당일 고상승률":
+                    result_df = result_df.sort_values(by='당일 상승률', ascending=False)
+                    
+                result_df = result_df.reset_index(drop=True)
+                
+                st.success(f"🔥 미국 마감일({latest_date}) 기준, [{search_mode}] 조건을 만족하는 종목 {len(result_df)}개를 찾았습니다!")
+                
+                # 포맷팅 정리
+                display_df = result_df.copy()
+                display_df['종가 ($)'] = display_df['종가 ($export)'].apply(lambda x: f"${x:,.2f}") if '종가 ($)' in display_df else display_df['종가 ($)'].apply(lambda x: f"${x:,.2f}")
+                display_df['당일 상승률'] = display_df['당일 상승률'].apply(lambda x: f"{x:+.2f}%")
+                display_df['당일 거래대금'] = display_df['당일 거래대금'].apply(lambda x: f"${x:,.2f}M")
+                display_df['5일 평균 거래량'] = display_df['5일 평균 거래량'].apply(lambda x: f"{x:,}")
+                display_df['최근일 거래량'] = display_df['최근일 거래량'].apply(lambda x: f"{x:,}")
+                
+                st.dataframe(display_df, use_container_width=True)
+            else:
+                st.info(f"선택하신 [{search_mode}] 조건을 만족하는 종목이 현재 마켓에 없습니다. 수치를 조금 조절해 보세요!")
+                
+        except Exception as e:
+            st.error(f"데이터를 처리하는 중 에러가 발생했습니다: {e}")
+else:
+    st.info("왼쪽 사이드바에서 원하시는 '검색 모드'를 선택한 후 [검색기 돌리기] 버튼을 눌러주세요.")
