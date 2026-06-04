@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # 1. 웹 페이지 레이아웃 설정
 st.set_page_config(page_title="미국 전종목 실시간 검색기", layout="wide")
@@ -48,7 +48,6 @@ search_mode = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 세부 수치 설정")
 
-# [에러 해결] 어떤 모드를 고르든 기본값을 미리 할당해두어 변수 미정의(NameError)를 완벽히 차단합니다.
 volume_ratio = 400
 min_turnover = 10
 min_change = 8
@@ -77,7 +76,11 @@ def get_all_us_tickers():
 
 # 3. 데이터 수집 및 조건 필터링 가동
 if st.sidebar.button("검색기 돌리기 🚀"):
-    now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # [🔥 핵심 수정 완료] 해외 서버 시간 기점을 한국 시간(KST)으로 완전 고정
+    utc_now = datetime.now(timezone.utc)
+    kst_now = utc_now + timedelta(hours=9)
+    now_time = kst_now.strftime("%Y-%m-%d %H:%M:%S")
+    
     with st.spinner(f"♻️ {now_time} 현재 시점 실시간 가격 정보 스캔 중..."):
         try:
             ticker_map = get_all_us_tickers()
@@ -142,7 +145,7 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                     
                 result_df = result_df.reset_index(drop=True)
                 
-                st.success(f"🎯 조회 시점({now_time}) 기준, 실시간 [{search_mode}] 조건을 만족하는 종목 {len(result_df)}개를 찾았습니다!")
+                st.success(f"🎯 조회 시점(한국 시간: {now_time}) 기준, 실시간 [{search_mode}] 조건을 만족하는 종목 {len(result_df)}개를 찾았습니다!")
                 
                 display_df = result_df.copy()
                 display_df['현재가 ($)'] = display_df['현재가 ($)'].apply(lambda x: f"${x:,.2f}")
