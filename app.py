@@ -4,40 +4,31 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # 1. 웹 페이지 레이아웃 설정
-st.set_page_config(page_title="미장 멀티 조건 검색기", layout="wide")
-st.title("🇺🇸 미국 주식 멀티 조건 급증 검색기")
-st.caption("거래량 급증, 거래대금, 당일 상승률 조건을 만족하는 미국 우량 종목을 검색합니다.")
+st.set_page_config(page_title="미장 선택형 조건 검색기", layout="wide")
+st.title("🇺🇸 미국 주식 맞춤형 단일 조건 검색기")
+st.caption("원하는 검색 조건을 하나만 선택하여 해당하는 미국 우량 종목을 빠르게 찾아냅니다.")
 
-# 2. 사이드바 설정 (요청사항 반영)
-st.sidebar.header("🔍 검색 조건 설정")
+# 2. 사이드바 설정
+st.sidebar.header("🔍 검색 모드 선택")
 
-# 거래량 증가율: 기본값 400%, 50% 단위로 조절 가능하도록 수정
-volume_ratio = st.sidebar.slider(
-    "평균 대비 거래량 증가율 조건 (%)", 
-    min_value=50, 
-    max_value=1000, 
-    value=400, 
-    step=50
+# [핵심 변경] 3가지를 다 합치는 게 아니라, 딱 하나의 조건만 고르게 합니다.
+search_mode = st.sidebar.radio(
+    "적용할 검색 조건을 선택하세요",
+    ["① 거래량 급증", "② 대량 거래대금", "③ 당일 고상승률"]
 )
 
-# [조건 추가 1] 거래대금 필터 (최근 거래일 기준, 백만 달러 단위)
-min_turnover = st.sidebar.number_input(
-    "최소 거래대금 조건 (백만 달러, $M)", 
-    min_value=0, 
-    value=10, 
-    step=5
-)
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ 세부 수치 설정")
 
-# [조건 추가 2] 당일 상승률 필터 (%)
-min_change = st.sidebar.slider(
-    "당일 최소 상승률 조건 (%)", 
-    min_value=-10, 
-    max_value=30, 
-    value=3, 
-    step=1
-)
+# 선택한 모드에 따라서 필요한 슬라이더/입력창만 활성화하거나 가이드 유도
+if search_mode == "① 거래량 급증":
+    volume_ratio = st.sidebar.slider("평균(5일) 대비 거래량 증가율 (%)", min_value=50, max_value=1000, value=400, step=50)
+elif search_mode == "② 대량 거래대금":
+    min_turnover = st.sidebar.number_input("최소 거래대금 조건 (백만 달러, $M)", min_value=0, value=100, step=10)
+elif search_mode == "③ 당일 고상승률":
+    min_change = st.sidebar.slider("당일 최소 상승률 조건 (%)", min_value=-10, max_value=30, value=3, step=1)
 
-# 미국 주요 우량 종목 리스트 내장 (차단 없음)
+# 미국 주요 우량 종목 리스트 내장
 @st.cache_data
 def get_us_tickers():
     stock_dict = {
@@ -70,9 +61,9 @@ def get_us_tickers():
     }
     return stock_dict
 
-# 3. 데이터 수집 및 멀티 필터링 버튼
+# 3. 데이터 수집 및 1가지 조건 집중 필터링 버튼
 if st.sidebar.button("검색기 돌리기 🚀"):
-    with st.spinner("미국 종목 데이터 추출 및 조건식 검증 중... 잠시만 기다려주세요."):
+    with st.spinner(f"[{search_mode}] 조건 설정에 맞춰 종목 분석 중..."):
         try:
             ticker_map = get_us_tickers()
             tickers = list(ticker_map.keys())
@@ -80,7 +71,6 @@ if st.sidebar.button("검색기 돌리기 🚀"):
             end_date = datetime.today()
             start_date = end_date - timedelta(days=15)
             
-            # 야후 파이낸스 데이터 일괄 다운로드
             group_data = yf.download(tickers, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), group_by='ticker')
             
             results = []
@@ -90,58 +80,30 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                     df_stock = group_data[ticker].dropna()
                     
                     if len(df_stock) >= 6:
-                        # 최근 거래일 데이터 계산
                         latest_close = float(df_stock['Close'].iloc[-1])
                         prev_close = float(df_stock['Close'].iloc[-2])
                         latest_vol = float(df_stock['Volume'].iloc[-1])
                         latest_date = df_stock.index[-1].strftime("%Y-%m-%d")
                         
-                        # 1. 당일 상승률 계산 (%)
+                        # 지표들 미리 계산
                         day_change_pct = round(((latest_close - prev_close) / prev_close) * 100, 2)
-                        
-                        # 2. 당일 거래대금 계산 (종가 * 거래량 / 1,000,000 -> 백만 달러 단위)
                         turnover_m = round((latest_close * latest_vol) / 1_000_000, 2)
-                        
-                        # 3. 5일 평균 거래량 계산 (가장 최근일 제외)
                         five_day_avg_vol = df_stock['Volume'].iloc[-6:-1].mean()
+                        vol_ratio_calc = round((latest_vol / five_day_avg_vol) * 100, 2) if five_day_avg_vol > 0 else 0
                         
-                        if five_day_avg_vol > 0:
-                            vol_ratio_calc = round((latest_vol / five_day_avg_vol) * 100, 2)
+                        # [조건별 단독 패스 체크] 내가 라디오 버튼으로 고른 1개의 조건만 검사합니다.
+                        is_match = False
+                        if search_mode == "① 거래량 급증" and vol_ratio_calc >= volume_ratio:
+                            is_match = True
+                        elif search_mode == "② 대량 거래대금" and turnover_m >= min_turnover:
+                            is_match = True
+                        elif search_mode == "③ 당일 고상승률" and day_change_pct >= min_change:
+                            is_match = True
                             
-                            # [멀티 조건 필터링 검사] 3가지 조건을 모두 만족하는지 체크
-                            if (vol_ratio_calc >= volume_ratio) and (turnover_m >= min_turnover) and (day_change_pct >= min_change):
-                                results.append({
-                                    '종목명': ticker_map.get(ticker, ticker),
-                                    '티커(Ticker)': ticker,
-                                    '종가 ($)': latest_close,
-                                    '당일 상승률 (%)': day_change_pct,
-                                    '당일 거래대금 ($M)': turnover_m,
-                                    '5일 평균 거래량': int(five_day_avg_vol),
-                                    '최근일 거래량': int(latest_vol),
-                                    '거래량 증가율(%)': vol_ratio_calc
-                                })
-            
-            # 결과 시각화
-            if results:
-                result_df = pd.DataFrame(results)
-                # 거래량 증가율이 높은 순서로 정렬
-                result_df = result_df.sort_values(by='거래량 증가율(%)', ascending=False).reset_index(drop=True)
-                
-                st.success(f"🔥 미국 마감일({latest_date}) 기준, 조건을 모두 만족하는 종목 {len(result_df)}개를 찾았습니다!")
-                
-                # 가독성을 위한 데이터 포맷팅
-                display_df = result_df.copy()
-                display_df['종가 ($)'] = display_df['종가 ($)'].apply(lambda x: f"${x:,.2f}")
-                display_df['당일 상승률 (%)'] = display_df['당일 상승률 (%)'].apply(lambda x: f"{x:+.2f}%")
-                display_df['당일 거래대금 ($M)'] = display_df['당일 거래대금 ($M)'].apply(lambda x: f"${x:,.2f}M")
-                display_df['5일 평균 거래량'] = display_df['5일 평균 거래량'].apply(lambda x: f"{x:,}")
-                display_df['최근일 거래량'] = display_df['최근일 거래량'].apply(lambda x: f"{x:,}")
-                
-                st.dataframe(display_df, use_container_width=True)
-            else:
-                st.info(f"조회는 정상 완료되었으나, 설정하신 3가지 조건을 동시에 만족하는 종목이 현재 마켓에 없습니다. 조건을 조금 낮춰보세요!")
-                
-        except Exception as e:
-            st.error(f"데이터를 처리하는 중 에러가 발생했습니다: {e}")
-else:
-    st.info("왼쪽 사이드바에서 세 가지 조건을 설정한 후 [검색기 돌리기] 버튼을 눌러주세요.")
+                        if is_match:
+                            results.append({
+                                '종목명': ticker_map.get(ticker, ticker),
+                                '티커(Ticker)': ticker,
+                                '종가 ($)': latest_close,
+                                '당일 상승률': day_change_pct,
+                                '당일 거래대금': turnover_m,
