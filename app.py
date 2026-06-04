@@ -11,7 +11,6 @@ st.caption("원하는 검색 조건을 하나만 선택하여 해당하는 미�
 # 2. 사이드바 설정
 st.sidebar.header("🔍 검색 모드 선택")
 
-# [핵심 변경] 3가지를 다 합치는 게 아니라, 딱 하나의 조건만 고르게 합니다.
 search_mode = st.sidebar.radio(
     "적용할 검색 조건을 선택하세요",
     ["① 거래량 급증", "② 대량 거래대금", "③ 당일 고상승률"]
@@ -20,7 +19,6 @@ search_mode = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 세부 수치 설정")
 
-# 선택한 모드에 따라서 필요한 슬라이더/입력창만 활성화하거나 가이드 유도
 if search_mode == "① 거래량 급증":
     volume_ratio = st.sidebar.slider("평균(5일) 대비 거래량 증가율 (%)", min_value=50, max_value=1000, value=400, step=50)
 elif search_mode == "② 대량 거래대금":
@@ -61,7 +59,7 @@ def get_us_tickers():
     }
     return stock_dict
 
-# 3. 데이터 수집 및 1가지 조건 집중 필터링 버튼
+# 3. 데이터 수집 및 버튼 클릭 시 동작
 if st.sidebar.button("검색기 돌리기 🚀"):
     with st.spinner(f"[{search_mode}] 조건 설정에 맞춰 종목 분석 중..."):
         try:
@@ -85,13 +83,13 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                         latest_vol = float(df_stock['Volume'].iloc[-1])
                         latest_date = df_stock.index[-1].strftime("%Y-%m-%d")
                         
-                        # 지표들 미리 계산
+                        # 지표 계산
                         day_change_pct = round(((latest_close - prev_close) / prev_close) * 100, 2)
                         turnover_m = round((latest_close * latest_vol) / 1_000_000, 2)
                         five_day_avg_vol = df_stock['Volume'].iloc[-6:-1].mean()
                         vol_ratio_calc = round((latest_vol / five_day_avg_vol) * 100, 2) if five_day_avg_vol > 0 else 0
                         
-                        # [조건별 단독 패스 체크] 내가 라디오 버튼으로 고른 1개의 조건만 검사합니다.
+                        # 조건 검사
                         is_match = False
                         if search_mode == "① 거래량 급증" and vol_ratio_calc >= volume_ratio:
                             is_match = True
@@ -116,7 +114,7 @@ if st.sidebar.button("검색기 돌리기 🚀"):
             if results:
                 result_df = pd.DataFrame(results)
                 
-                # 정렬 기준도 내가 고른 메뉴에 맞춰서 똑똑하게 변경됩니다.
+                # 정렬 처리
                 if search_mode == "① 거래량 급증":
                     result_df = result_df.sort_values(by='거래량 증가율(%)', ascending=False)
                 elif search_mode == "② 대량 거래대금":
@@ -128,9 +126,9 @@ if st.sidebar.button("검색기 돌리기 🚀"):
                 
                 st.success(f"🔥 미국 마감일({latest_date}) 기준, [{search_mode}] 조건을 만족하는 종목 {len(result_df)}개를 찾았습니다!")
                 
-                # 포맷팅 정리
+                # [오타 수정 완료] 가독성을 위한 포맷팅 정리 ($export 버그 제거)
                 display_df = result_df.copy()
-                display_df['종가 ($)'] = display_df['종가 ($export)'].apply(lambda x: f"${x:,.2f}") if '종가 ($)' in display_df else display_df['종가 ($)'].apply(lambda x: f"${x:,.2f}")
+                display_df['종가 ($)'] = display_df['종가 ($)'].apply(lambda x: f"${x:,.2f}")
                 display_df['당일 상승률'] = display_df['당일 상승률'].apply(lambda x: f"{x:+.2f}%")
                 display_df['당일 거래대금'] = display_df['당일 거래대금'].apply(lambda x: f"${x:,.2f}M")
                 display_df['5일 평균 거래량'] = display_df['5일 평균 거래량'].apply(lambda x: f"{x:,}")
