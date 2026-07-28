@@ -17,34 +17,28 @@ st.set_page_config(
 DB_FILE = "master_production_data.csv"
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 전처리 및 데이터베이스 관리 함수
+# 2. 데이터 전처리 및 유연한 컬럼 탐지 함수
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
-    """
-     특정 '설비코드' 열에 의존하지 않고,
-    엑셀의 첫 번째 표 데이터 형태를 그대로 읽어와서 정제하는 단순/강력한 함수
-    """
     try:
-        # 첫 번째 행을 헤더(컬럼명)로 하여 엑셀 읽기
+        # 첫 번째 행을 헤더로 읽기
         df = pd.read_excel(uploaded_file, header=0)
-        
-        # 컬럼명의 공백 및 특수문자 정리
-        df.columns = [str(c).replace("\n", "").strip() for c in df.columns]
+        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
 
         # 완전히 빈 행/열 제거
         df = df.dropna(how="all").dropna(how="all", axis=1)
 
-        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링 (데이터 오염 방지)
+        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링
         for col in df.columns:
-            # 문자열로 된 열에 대해서만 '계/소계/합계/transfer' 포함 여부 검사
             if df[col].dtype == 'object':
                 mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
                 df = df[~mask]
 
-        # 주요 숫자 관련 열에 대해 쉼표(,) 제거 및 수치형 변환
+        # 숫자형 데이터 변환 (쉼표 제거)
         for col in df.columns:
-            if any(keyword in col for keyword in ["수", "량", "실적", "률", "비율", "효율", "CT"]):
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0)
+            # 시간 포맷(HH:MM:SS)이나 문자열 명칭을 제외한 수치 컬럼 정제
+            if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors='ignore')
 
         return df
 
@@ -52,13 +46,17 @@ def parse_excel_file(uploaded_file):
         st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
         return None
 
-
 def load_master_data():
-    """누적 데이터베이스 파일 읽기"""
     if os.path.exists(DB_FILE):
         return pd.read_csv(DB_FILE)
     return pd.DataFrame()
 
+def find_col(df, keywords):
+    """주어진 키워드가 포함된 컬럼명을 유연하게 검색하는 함수"""
+    for col in df.columns:
+        if any(k in col for k in keywords):
+            return col
+    return None
 
 # -----------------------------------------------------------------------------
 # 3. 사이드바 (데이터 업로드 및 누적 등록)
@@ -92,7 +90,6 @@ if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_c
 
             master_df = load_master_data()
 
-            # 동일 연도/주차 데이터가 존재할 경우 덮어쓰기
             if not master_df.empty:
                 already_exists = master_df[
                     (master_df["연도"] == selected_year) & (master_df["주차"] == selected_week)
@@ -111,12 +108,6 @@ if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_c
         st.sidebar.warning("업로드할 엑셀 파일을 먼저 선택해주세요.")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📌 사용 안내")
-st.sidebar.caption("""
-1. 엑셀의 맨 위 1번째 줄이 열 이름(설비명, 품번 등)이 되도록 맞춰주세요.
-2. 업로드 시 '연도'와 '주차' 선택 후 [데이터 누적 저장하기]를 누르면 됩니다.
-""")
-
 
 # -----------------------------------------------------------------------------
 # 4. 메인 대시보드 화면
@@ -128,6 +119,22 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
+    # 컬럼 매핑 자동 탐지
+    col_eq = find_col(master_df, ["설비명", "설비"])
+    col_item = find_col(master_df, ["품명", "품번"])
+    col_possible = find_col(master_df, ["생산가능수", "생산가능"])
+    col_actual = find_col(master_df, ["가동생산량", "가동생산", "생산량"])
+    col_defect = find_col(master_df, ["불량실적", "불량수", "불량"])
+    col_yield = find_col(master_df, ["양품률", "양품율"])
+    col_time_rate = find_col(master_df, ["시간가동률", "시간가동율"])
+    col_perf_rate = find_col(master_df, ["성능가동률", "성능가동율"])
+    col_oee = find_col(master_df, ["설비종합", "OEE"])
+    col_ct = find_col(master_df, ["실제CT", "실제C/T", "CT"])
+    col_load_time = find_col(master_df, ["부하시간"])
+    col_work_time = find_col(master_df, ["가동시간"])
+    col_stop_loss = find_col(master_df, ["정지LOSS", "정지손실", "비가동"])
+
+    # 필터 영역
     col_f1, col_f2, col_f3 = st.columns([1, 2, 2])
     
     years = sorted(master_df["연도"].unique().tolist(), reverse=True)
@@ -145,70 +152,99 @@ else:
             options=available_weeks, 
             default=available_weeks
         )
-        
-    # 설비명 열 찾기 (설비명 컬럼이 있을 경우 필터 제공)
-    eq_cols = [c for c in df_year.columns if "설비" in c or "호기" in c]
-    eq_col_name = eq_cols[0] if eq_cols else None
-    
-    if eq_col_name:
-        available_equipments = df_year[eq_col_name].dropna().unique().tolist()
+
+    filtered_df = df_year[df_year["주차"].isin(sel_weeks)]
+
+    if col_eq and col_eq in filtered_df.columns:
+        available_equipments = filtered_df[col_eq].dropna().unique().tolist()
         with col_f3:
             sel_equipments = st.multiselect(
-                f"🔧 {eq_col_name} 선택", 
+                f"🔧 설비 선택", 
                 options=available_equipments, 
                 default=available_equipments
             )
-        filtered_df = df_year[
-            (df_year["주차"].isin(sel_weeks)) & 
-            (df_year[eq_col_name].isin(sel_equipments))
-        ]
-    else:
-        filtered_df = df_year[df_year["주차"].isin(sel_weeks)]
+        filtered_df = filtered_df[filtered_df[col_eq].isin(sel_equipments)]
 
     st.markdown("---")
 
     if filtered_df.empty:
         st.warning("선택한 필터 조건에 해당하는 데이터가 없습니다.")
     else:
-        # 주요 수량 및 비율 계산
-        p_col = [c for c in filtered_df.columns if "생산가능" in c]
-        a_col = [c for c in filtered_df.columns if "가동생산" in c or "생산량" in c]
-        d_col = [c for c in filtered_df.columns if "불량" in c]
-        oee_col = [c for c in filtered_df.columns if "종합" in c or "OEE" in c]
-
-        total_possible = filtered_df[p_col[0]].sum() if p_col else 0
-        total_actual = filtered_df[a_col[0]].sum() if a_col else 0
-        total_defect = filtered_df[d_col[0]].sum() if d_col else 0
-        
-        avg_yield = ((total_actual - total_defect) / total_actual * 100) if total_actual > 0 else 0
-        avg_oee = filtered_df[oee_col[0]].mean() if oee_col else 0
+        # 상단 핵심 KPI 요약
+        v_possible = pd.to_numeric(filtered_df[col_possible], errors='coerce').sum() if col_possible else 0
+        v_actual = pd.to_numeric(filtered_df[col_actual], errors='coerce').sum() if col_actual else 0
+        v_defect = pd.to_numeric(filtered_df[col_defect], errors='coerce').sum() if col_defect else 0
+        v_yield = ((v_actual - v_defect) / v_actual * 100) if v_actual > 0 else 0
+        v_oee = pd.to_numeric(filtered_df[col_oee], errors='coerce').mean() if col_oee else 0
 
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("총 생산가능수", f"{total_possible:,.0f} 개")
-        k2.metric("총 가동생산량", f"{total_actual:,.0f} 개")
-        k3.metric("총 불량수량", f"{total_defect:,.0f} 개")
-        k4.metric("평균 양품률", f"{avg_yield:.2f} %")
-        k5.metric("평균 설비종합효율(OEE)", f"{avg_oee:.2f} %")
+        k1.metric("총 생산가능수", f"{v_possible:,.0f} 개")
+        k2.metric("총 가동생산량", f"{v_actual:,.0f} 개")
+        k3.metric("총 불량수량", f"{v_defect:,.0f} 개")
+        k4.metric("평균 양품률", f"{v_yield:.2f} %")
+        k5.metric("평균 설비종합효율(OEE)", f"{v_oee:.2f} %")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        tab1, tab2, tab3 = st.tabs(["📊 주차별 / 설비별 트렌드 분석", "📋 상세 보고서 및 집계", "🗄️ 누적 DB 관리"])
+        tab1, tab2, tab3 = st.tabs(["📌 설비별 상세 현황 보고서", "📊 주차별 / 설비별 트렌드 분석", "🗄️ 누적 DB 관리"])
 
+        # ---------------------------------------------------------------------
+        # TAB 1: 요청하신 설비별 지정 항목 중심 보고서
+        # ---------------------------------------------------------------------
         with tab1:
+            st.subheader("📋 설비 기준 상세 실적 및 시간/LOSS 현황")
+            
+            # 사용자 요청 지정 컬럼 리스트 정리
+            req_cols = [
+                ("설비명", col_eq),
+                ("품명", col_item),
+                ("가동생산량", col_actual),
+                ("불량실적", col_defect),
+                ("양품률(%)", col_yield),
+                ("시간가동률(%)", col_time_rate),
+                ("성능가동률(%)", col_perf_rate),
+                ("설비종합(%)", col_oee),
+                ("실제 C/T", col_ct),
+                ("부하시간", col_load_time),
+                ("가동시간", col_work_time),
+                ("정지LOSS", col_stop_loss)
+            ]
+            
+            # 존재하는 컬럼만 추출하여 가공
+            select_cols = [c[1] for c in req_cols if c[1] in filtered_df.columns]
+            rename_dict = {c[1]: c[0] for c in req_cols if c[1] in filtered_df.columns}
+            
+            view_df = filtered_df[select_cols].rename(columns=rename_dict)
+            
+            st.dataframe(view_df, use_container_width=True, height=500)
+
+            # 다운로드
+            csv_data = view_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 현재 화면 데이터 엑셀(CSV) 다운로드",
+                data=csv_data,
+                file_name=f"설비상세실적_{sel_year}_{'_'.join(sel_weeks)}.csv",
+                mime="text/csv"
+            )
+
+        # ---------------------------------------------------------------------
+        # TAB 2: 주차별 추이 차트
+        # ---------------------------------------------------------------------
+        with tab2:
             col_chart1, col_chart2 = st.columns(2)
 
             with col_chart1:
                 st.subheader("📈 주차별 / 설비별 가동생산량 추이")
-                if a_col and eq_col_name:
-                    df_grouped_prod = filtered_df.groupby(["주차", eq_col_name])[a_col[0]].sum().reset_index()
+                if col_actual and col_eq:
+                    df_grouped_prod = filtered_df.groupby(["주차", col_eq])[col_actual].apply(lambda x: pd.to_numeric(x, errors='coerce').sum()).reset_index()
                     df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(x.replace("주차", "")))
                     df_grouped_prod = df_grouped_prod.sort_values("주차_num")
 
                     fig_prod = px.bar(
                         df_grouped_prod, 
                         x="주차", 
-                        y=a_col[0], 
-                        color=eq_col_name,
+                        y=col_actual, 
+                        color=col_eq,
                         barmode="group",
                         text_auto=',.0f',
                         title="주차별 설비 생산량 비교"
@@ -218,34 +254,25 @@ else:
 
             with col_chart2:
                 st.subheader("🎯 설비종합효율(OEE %) 추이")
-                if oee_col and eq_col_name:
-                    df_grouped_oee = filtered_df.groupby(["주차", eq_col_name])[oee_col[0]].mean().reset_index()
+                if col_oee and col_eq:
+                    df_grouped_oee = filtered_df.groupby(["주차", col_eq])[col_oee].apply(lambda x: pd.to_numeric(x, errors='coerce').mean()).reset_index()
                     df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(x.replace("주차", "")))
                     df_grouped_oee = df_grouped_oee.sort_values("주차_num")
 
                     fig_oee = px.line(
                         df_grouped_oee,
                         x="주차",
-                        y=oee_col[0],
-                        color=eq_col_name,
+                        y=col_oee,
+                        color=col_eq,
                         markers=True,
                         title="주차별 설비종합효율(OEE %) 변화"
                     )
                     fig_oee.update_layout(xaxis_title="주차", yaxis_title="설비종합효율 (%)", yaxis_range=[0, 100])
                     st.plotly_chart(fig_oee, use_container_width=True)
 
-        with tab2:
-            st.subheader("📑 주차별 / 설비별 상세 실적 집계표")
-            st.dataframe(filtered_df, use_container_width=True, height=450)
-
-            csv_data = filtered_df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                label="📥 현재 필터 데이터 엑셀(CSV) 다운로드",
-                data=csv_data,
-                file_name=f"설비실적보고서_{sel_year}_{'_'.join(sel_weeks)}.csv",
-                mime="text/csv"
-            )
-
+        # ---------------------------------------------------------------------
+        # TAB 3: DB 관리
+        # ---------------------------------------------------------------------
         with tab3:
             st.subheader("🗄️ 전체 누적 데이터베이스 관리")
             db_summary = master_df.groupby(["연도", "주차"]).agg(
