@@ -22,21 +22,39 @@ DB_FILE = "master_production_data.csv"
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     try:
-        # 1. openpyxl로 data_only=True로 읽어 수식 대신 값만 가져옴 (셀 오류 무시 처리)
-        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-        sheet = wb.active
+        # openpyxl 직접 로딩 대신 pandas 엔진 사용 (Nested.from_tree 오류 방지)
+        df = pd.read_excel(uploaded_file, header=0, engine='openpyxl')
 
-        data = []
-        for row in sheet.iter_rows(values_only=True):
-            # 셀 값 중 에러 문자열(#N/A, #VALUE! 등)이 발견되면 None(NaN)으로 안전하게 변환
-            cleaned_row = [
-                None if isinstance(val, str) and val.startswith("#") else val
-                for val in row
-            ]
-            data.append(cleaned_row)
+        # 셀 내 수식 에러(#N/A, #VALUE! 등) 및 문자열 정제
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].apply(
+                    lambda x: None if isinstance(x, str) and x.startswith("#") else x
+                )
 
-        if not data:
-            return None
+        # 열 이름 공백 및 줄바꿈 정제
+        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
+
+        # 완전히 빈 행/열 제거
+        df = df.dropna(how="all").dropna(how="all", axis=1)
+
+        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
+                df = df[~mask]
+
+        # 수치형 데이터 변환 (쉼표 제거 및 변환 불가 값은 안전하게 NaN 처리)
+        for col in df.columns:
+            if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
+                s = df[col].astype(str).str.replace(",", "").str.strip()
+                df[col] = pd.to_numeric(s, errors='coerce')
+
+        return df
+
+    except Exception as e:
+        st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
+        return None
 
         # DataFrame 생성 (첫 번째 행을 헤더로 사용)
         df = pd.DataFrame(data[1:], columns=data[0])
