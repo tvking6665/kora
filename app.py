@@ -27,7 +27,8 @@ def parse_excel_file(uploaded_file):
         # '설비명' 또는 '설비' 또는 '품번'이 들어간 행을 진짜 헤더 행으로 찾기
         header_row_idx = 0
         for idx, row in raw_df.iterrows():
-            row_str = " ".join(row.astype(str))
+            # [수정] 행의 값들을 안전하게 문자열로 변환하여 결합 (TypeError 방지)
+            row_str = " ".join(str(val) for val in row.values if pd.notna(val))
             if any(k in row_str for k in ["설비명", "설비", "품번", "가동생산량"]):
                 header_row_idx = idx
                 break
@@ -67,7 +68,7 @@ def parse_excel_file(uploaded_file):
     except Exception as e:
         st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
         return None
-
+        
 def load_master_data():
     if os.path.exists(DB_FILE):
         return pd.read_csv(DB_FILE)
