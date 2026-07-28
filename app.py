@@ -1,4 +1,3 @@
-```python:app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -76,24 +75,6 @@ def parse_excel_file(uploaded_file):
     except Exception as e:
         st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
         return None
-
-
-def time_to_seconds(time_val):
-    """HH:MM:SS 포맷 또는 time 객체를 초 단위(float)로 변환"""
-    if pd.isna(time_val):
-        return 0.0
-    if isinstance(time_val, str):
-        try:
-            parts = time_val.split(":")
-            if len(parts) == 3:
-                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-            elif len(parts) == 2:
-                return float(parts[0]) * 60 + float(parts[1])
-        except:
-            return 0.0
-    elif isinstance(time_val, (int, float)):
-        return float(time_val)
-    return 0.0
 
 
 def load_master_data():
@@ -222,8 +203,6 @@ else:
         # 합계 수량 기준 지표 재계산 (정확도 확보)
         avg_yield = ((total_actual - total_defect) / total_actual * 100) if total_actual > 0 else 0
         avg_oee = filtered_df["설비종합(%)"].mean() if "설비종합(%)" in filtered_df.columns else 0
-        avg_time_avail = filtered_df["시간가동률(%)"].mean() if "시간가동률(%)" in filtered_df.columns else 0
-        avg_perf = filtered_df["성능가동률(%)"].mean() if "성능가동률(%)" in filtered_df.columns else 0
 
         k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("총 생산가능수", f"{total_possible:,.0f} 개")
@@ -247,7 +226,6 @@ else:
                 st.subheader("📈 주차별 / 설비별 가동생산량 추이")
                 df_grouped_prod = filtered_df.groupby(["주차", "설비명"])["가동생산량"].sum().reset_index()
                 
-                # 주차 정렬
                 df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(x.replace("주차", "")))
                 df_grouped_prod = df_grouped_prod.sort_values("주차_num")
 
@@ -306,14 +284,12 @@ else:
         with tab2:
             st.subheader("📑 주차별 / 설비별 상세 실적 집계표")
             
-            # 화면 출력에 필요한 컬럼 정리
             display_cols = [
                 "연도", "주차", "설비코드", "설비명", "품번", "품명",
                 "생산가능수", "가동생산량", "비가동생산량", "불량실적",
                 "목표달성률(%)", "양품률(%)", "시간가동률(%)", "성능가동률(%)", "설비종합(%)"
             ]
             
-            # 실제 존재하는 컬럼만 선택
             actual_display_cols = [c for c in display_cols if c in filtered_df.columns]
 
             st.dataframe(
@@ -332,7 +308,6 @@ else:
                 height=450
             )
 
-            # 엑셀 다운로드 버튼
             csv_data = filtered_df[actual_display_cols].to_csv(index=False, encoding="utf-8-sig")
             st.download_button(
                 label="📥 현재 필터 데이터 엑셀(CSV) 다운로드",
@@ -342,7 +317,7 @@ else:
             )
 
         # ---------------------------------------------------------------------
-        # TAB 3: 누적 DB 관리 (특정 주차 삭제 등)
+        # TAB 3: 누적 DB 관리
         # ---------------------------------------------------------------------
         with tab3:
             st.subheader("🗄️ 전체 누적 데이터베이스 관리")
@@ -372,11 +347,3 @@ else:
                     new_master.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
                     st.success(f"{del_year}년 {del_week} 데이터가 성공적으로 삭제되었습니다.")
                     st.rerun()
-```eof
-
-제공해주신 엑셀 표와 동일한 포맷을 자동으로 읽어들이고 정제하는 Streamlit 애플리케이션 및 설치 가이드 생성이 완료되었습니다.
-
-### 주요 반영 사항
-1. **헤더 자동 인식**: `작업수량`, `생산성분석`, `비가동` 등의 복합 헤더 속에서도 `설비코드` 행을 자동으로 탐지하여 정밀하게 읽어옵니다.
-2. **합계 행 자동 제외**: 중간의 `계` 행 및 최하단의 `대형(transfer)` 종합 행은 파이썬 내부에서 제외한 뒤 원천 데이터만 저장하므로 데이터 오염이나 이중 계산이 방지됩니다.
-3. **주차별/설비별 대시보드**: 누적된 데이터를 바탕으로 주차별 생산량 추이 차트, 설비종합효율(OEE %) 추이, KPI 카드, 엑셀 다운로드 기능이 통합 제공됩니다.
