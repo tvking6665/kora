@@ -21,13 +21,12 @@ DB_FILE = "master_production_data.csv"
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     try:
-        # header없이 전체 읽어오기 (상단 빈 행 또는 타이틀 행 방어)
+        # header없이 전체 읽어오기
         raw_df = pd.read_excel(uploaded_file, header=None, engine='openpyxl')
 
         # '설비명' 또는 '설비' 또는 '품번'이 들어간 행을 진짜 헤더 행으로 찾기
         header_row_idx = 0
         for idx, row in raw_df.iterrows():
-            # [수정] 행의 값들을 안전하게 문자열로 변환하여 결합 (TypeError 방지)
             row_str = " ".join(str(val) for val in row.values if pd.notna(val))
             if any(k in row_str for k in ["설비명", "설비", "품번", "가동생산량"]):
                 header_row_idx = idx
@@ -35,10 +34,23 @@ def parse_excel_file(uploaded_file):
 
         # 헤더 설정 및 데이터 슬라이싱
         df = raw_df.iloc[header_row_idx + 1:].copy()
-        df.columns = raw_df.iloc[header_row_idx].astype(str).values
-
+        raw_cols = raw_df.iloc[header_row_idx].astype(str).values
+        
         # 컬럼명 공백/줄바꿈 정리
-        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
+        cleaned_cols = [str(c).replace("\n", "").replace(" ", "").strip() for c in raw_cols]
+        
+        # [중요] 중복된 컬럼명이 있을 경우 이름 뒤에 _1, _2 붙여 고유하게 만들기
+        seen = {}
+        unique_cols = []
+        for c in cleaned_cols:
+            if c in seen:
+                seen[c] += 1
+                unique_cols.append(f"{c}_{seen[c]}")
+            else:
+                seen[c] = 0
+                unique_cols.append(c)
+        
+        df.columns = unique_cols
 
         # 완전히 빈 행/열 및 Unnamed 열 제거
         df = df.dropna(how="all").dropna(how="all", axis=1)
@@ -46,16 +58,15 @@ def parse_excel_file(uploaded_file):
 
         # 수식 오류 문자열(#N/A, #VALUE! 등)을 None(NaN)으로 치환
         for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].apply(
-                    lambda x: None if isinstance(x, str) and x.startswith("#") else x
-                )
+            s = df[col].astype(str)
+            mask = s.str.startswith("#", na=False)
+            if mask.any():
+                df.loc[mask, col] = None
 
-        # '계', '소계', '합계', 'transfer' 등 필터링
+        # '계', '소계', '합계', 'transfer' 등 필터링 (첫번째 컬럼 또는 문자열 컬럼 기준)
         for col in df.columns:
-            if df[col].dtype == 'object':
-                mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
-                df = df[~mask]
+            mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
+            df = df[~mask]
 
         # 수치형 컬럼 정제 및 안전한 변환 (쉼표 제거 후 numeric)
         for col in df.columns:
@@ -68,7 +79,7 @@ def parse_excel_file(uploaded_file):
     except Exception as e:
         st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
         return None
-        
+
 def load_master_data():
     if os.path.exists(DB_FILE):
         return pd.read_csv(DB_FILE)
