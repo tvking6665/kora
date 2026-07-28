@@ -1,168 +1,382 @@
+```python:app.py
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+import numpy as np
+import os
+from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
 
-# 1. 웹 페이지 레이아웃 설정
-st.set_page_config(page_title="미국 전종목 실시간 검색기", layout="wide")
-
-# ----------------- [로그인 시스템] -----------------
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    st.title("🔒 시스템 로그인")
-    st.caption("프로그램을 사용하려면 관리자 계정으로 로그인해 주세요.")
-    
-    with st.form(key="login_form"):
-        input_id = st.text_input("아이디(ID)", placeholder="아이디를 입력하세요")
-        input_pw = st.text_input("비밀번호(PW)", type="password", placeholder="비밀번호를 입력하세요")
-        submit_button = st.form_submit_button(label="로그인")
-        
-        if submit_button:
-            if input_id == "관리자" and input_pw == "11111":
-                st.session_state.logged_in = True
-                st.rerun()
-            else:
-                st.error("❌ 아이디 또는 비밀번호가 일치하지 않습니다.")
-    st.stop()
-
-# ----------------- [메인 프로그램] -----------------
-col1, col2 = st.columns([9, 1])
-with col1:
-    st.title("🇺🇸 미국 주식 마켓 실시간 급등 검색기")
-with col2:
-    if st.button("로그아웃 🔓"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-st.caption("야후 파이낸스 실시간 거래 지표를 추적하여 마켓에서 가장 강하게 움직이는 급등주를 발굴합니다.")
-
-# 2. 사이드바 설정
-st.sidebar.header("🔍 검색 모드 선택")
-search_mode = st.sidebar.radio(
-    "적용할 검색 조건을 선택하세요",
-    ["① 거래량 급증", "② 대량 거래대금", "③ 당일 고상승률"]
+# -----------------------------------------------------------------------------
+# 1. 페이지 및 기본 설정
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="설비 실적 주간 취합 & 대시보드",
+    page_icon="🏭",
+    layout="wide"
 )
 
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 세부 수치 설정")
+DB_FILE = "master_production_data.csv"
 
-volume_ratio = 400
-min_turnover = 10
-min_change = 8
+# -----------------------------------------------------------------------------
+# 2. 데이터 전처리 및 데이터베이스 관리 함수
+# -----------------------------------------------------------------------------
+def parse_excel_file(uploaded_file):
+    """
+    업로드된 엑셀 파일에서 헤더 위치를 자동으로 찾고,
+    '계' 행 및 '대형(transfer)' 총계 행을 자동으로 정제하는 함수
+    """
+    try:
+        df_raw = pd.read_excel(uploaded_file, header=None)
+        
+        # '설비코드'가 들어있는 행을 진짜 헤더 위치로 검색
+        header_idx = None
+        for idx, row in df_raw.iterrows():
+            row_values = row.astype(str).tolist()
+            if any("설비코드" in val for val in row_values):
+                header_idx = idx
+                break
+        
+        if header_idx is None:
+            st.error("엑셀 파일 내에서 '설비코드' 열을 찾을 수 없습니다.")
+            return None
 
-if search_mode == "① 거래량 급증":
-    volume_ratio = st.sidebar.slider("평균(5일) 대비 거래량 증가율 (%)", min_value=50, max_value=1000, value=400, step=50)
-elif search_mode == "② 대량 거래대금":
-    min_turnover = st.sidebar.number_input("최소 거래대금 조건 (백만 달러, $M)", min_value=0, value=10, step=2)
-elif search_mode == "③ 당일 고상승률":
-    min_change = st.sidebar.slider("당일 최소 상승률 조건 (%)", min_value=-10, max_value=30, value=8, step=1)
+        # 헤더 위치 기준으로 다시 읽기
+        df = pd.read_excel(uploaded_file, header=header_idx)
+        df.columns = [str(c).strip() for c in df.columns]
 
-# 유동성이 집중된 미국 시장 핵심 성장주 및 S&P 500 마켓 가이드 풀 생성
-@st.cache_data(ttl=60)
-def get_comprehensive_tickers():
-    hot_growth = {
-        'PLTR': '팔란티어', 'SOUN': '사운드하운드 AI', 'BBAI': '빅베어 AI', 'AI': 'C3.ai', 'SMCI': '슈퍼마이크로',
-        'MARA': '마라톤 디지털', 'RIOT': '라이엇 플랫폼즈', 'COIN': '코인베이스', 'HOOD': '로빈후드', 'CLSK': '클린스파크',
-        'MSTR': '마이크로스트레티지', 'GME': '게임스탑', 'AMC': 'AMC 엔터', 'DJT': '트럼프 미디어', 'SOFI': '소파이',
-        'UPST': '업스타트', 'AFRM': '어펌 홀딩스', 'RIVN': '리비안', 'LCID': '루시드 그룹', 'NIO': '니오', 'IONQ': '아이온큐',
-        'OKLO': '오클로', 'RDDT': '레딧', 'DKNG': '드래프트킹즈', 'PLUG': '플러그 파워', 'ASTS': 'AST 스페이스모바일',
-        'VKTX': '바이킹 테라퓨틱스', 'WULF': '테라울프', 'CIFR': '사이퍼 마이닝', 'XPEV': '샤오펑', 'LI': '리오토',
-        'AAPL': '애플', 'MSFT': '마이크로소프트', 'NVDA': '엔비디아', 'TSLA': '테슬라', 'AMD': 'AMD', 'INTC': '인텔',
-        'AMZN': '아마존', 'META': '메타', 'GOOGL': '구글 A', 'NFLX': '넷플릭스', 'SQ': '블록', 'PYPL': '페이팔'
-    }
-    return hot_growth
+        # 필수 주요 컬럼 존재 확인
+        if "설비코드" not in df.columns:
+            st.error("'설비코드' 컬럼이 엑셀에 존재하지 않습니다.")
+            return None
 
-# 3. 데이터 수집 및 조건 필터링 가동
-if st.sidebar.button("검색기 돌리기 🚀"):
-    utc_now = datetime.now(timezone.utc)
-    kst_now = utc_now + timedelta(hours=9)
-    now_time = kst_now.strftime("%Y-%m-%d %H:%M:%S")
-    
-    with st.spinner(f"♻️ {now_time} 마켓 급등 섹터 트래킹 중..."):
+        # 1. 설비코드가 빈 값(NaN)인 행 제거
+        df = df.dropna(subset=["설비코드"]).copy()
+
+        # 2. '계' 및 '대형(transfer)' 등 집계 행 자동 필터링 (원천 상세 데이터만 유지)
+        df = df[~df["설비코드"].astype(str).str.contains("transfer|대형", case=False, na=False)]
+        
+        if "품번" in df.columns:
+            df = df[~df["품번"].astype(str).str.contains("계", na=False)]
+        if "품명" in df.columns:
+            df = df[~df["품명"].astype(str).str.contains("계", na=False)]
+
+        # 수량 및 비율 관련 주요 컬럼 수치형 변환
+        numeric_cols = [
+            "생산가능수", "가동생산량", "비가동생산량", "불량실적",
+            "목표달성률(%)", "양품률(%)", "시간가동률(%)", "성능가동률(%)", "설비종합(%)",
+            "이론CT", "실제CT"
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        return df
+
+    except Exception as e:
+        st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
+        return None
+
+
+def time_to_seconds(time_val):
+    """HH:MM:SS 포맷 또는 time 객체를 초 단위(float)로 변환"""
+    if pd.isna(time_val):
+        return 0.0
+    if isinstance(time_val, str):
         try:
-            ticker_map = get_comprehensive_tickers()
-            tickers_list = list(ticker_map.keys())
-            
-            # 주말 및 시차 보정을 위해 넉넉하게 최근 15일 히스토리 수집
-            end_date = datetime.today() + timedelta(days=1)
-            start_date = end_date - timedelta(days=15)
-            
-            # 프리/포스트마켓 데이터가 완벽히 병합된 역사적 데이터셋 호출 (낮 시간 버그 완전 방어)
-            group_data = yf.download(tickers_list, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), group_by='ticker', prepost=True)
-            
-            results = []
-            
-            for ticker in tickers_list:
-                if ticker in group_data.columns.levels[0]:
-                    df_stock = group_data[ticker].dropna()
-                    
-                    # 만약 장외 시간이라 오늘의 가 데이터가 생성 전이거나 변동이 0이라면 직전 완료 마감 거래일로 롤백
-                    if len(df_stock) >= 3:
-                        if df_stock['Volume'].iloc[-1] == 0 or (df_stock['Close'].iloc[-1] == df_stock['Close'].iloc[-2]):
-                            df_stock = df_stock.iloc[:-1]
-                            
-                    if len(df_stock) >= 6:
-                        latest_close = float(df_stock['Close'].iloc[-1])
-                        prev_close = float(df_stock['Close'].iloc[-2])
-                        latest_vol = float(df_stock['Volume'].iloc[-1])
-                        
-                        if latest_close < 1.0:
-                            continue
-                            
-                        # 다른 증권 앱 화면과 완벽히 일치하는 등락률/거래대금 동적 계산
-                        day_change_pct = round(((latest_close - prev_close) / prev_close) * 100, 2)
-                        turnover_m = round((latest_close * latest_vol) / 1_000_000, 2)
-                        five_day_avg_vol = df_stock['Volume'].iloc[-6:-1].mean()
-                        vol_ratio_calc = round((latest_vol / five_day_avg_vol) * 100, 2) if five_day_avg_vol > 0 else 0
-                        
-                        is_match = False
-                        if search_mode == "① 거래량 급증" and vol_ratio_calc >= volume_ratio:
-                            is_match = True
-                        elif search_mode == "② 대량 거래대금" and turnover_m >= min_turnover:
-                            is_match = True
-                        elif search_mode == "③ 당일 고상승률" and day_change_pct >= min_change:
-                            is_match = True
-                            
-                        if is_match:
-                            results.append({
-                                '종목명': ticker_map.get(ticker, ticker),
-                                '티커(Ticker)': ticker,
-                                '현재가 ($)': latest_close,
-                                '상승률': day_change_pct,
-                                '거래대금': turnover_m,
-                                '5일 평균 거래량': int(five_day_avg_vol),
-                                '당일 거래량': int(latest_vol),
-                                '거래량 증가율(%)': vol_ratio_calc
-                            })
-            
-            if results:
-                result_df = pd.DataFrame(results)
-                
-                if search_mode == "① 거래량 급증":
-                    result_df = result_df.sort_values(by='거래량 증가율(%)', ascending=False)
-                elif search_mode == "② 대량 거래대금":
-                    result_df = result_df.sort_values(by='거래대금', ascending=False)
-                elif search_mode == "③ 당일 고상승률":
-                    result_df = result_df.sort_values(by='상승률', ascending=False)
-                    
-                result_df = result_df.reset_index(drop=True)
-                
-                st.success(f"🎯 한국 시간 기준 {now_time} 스캔 완료! 만족하는 종목 {len(result_df)}개를 발굴했습니다.")
-                
-                display_df = result_df.copy()
-                display_df['현재가 ($)'] = display_df['현재가 ($)'].apply(lambda x: f"${x:,.2f}")
-                display_df['상승률'] = display_df['상승률'].apply(lambda x: f"{x:+.2f}%")
-                display_df['거래대금'] = display_df['거래대금'].apply(lambda x: f"${x:,.2f}M")
-                display_df['5일 평균 거래량'] = display_df['5일 평균 거래량'].apply(lambda x: f"{x:,}")
-                display_df['당일 거래량'] = display_df['당일 거래량'].apply(lambda x: f"{x:,}")
-                
-                st.dataframe(display_df, use_container_width=True)
-            else:
-                st.info(f"현재 선택하신 조건({min_change}%) 이상으로 움직인 종목이 검색 풀 내에 없습니다. 수치를 조금 낮춘 후 재시도해 보세요!")
-                
-        except Exception as e:
-            st.error(f"데이터 갱신 오류: {e}")
+            parts = time_val.split(":")
+            if len(parts) == 3:
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+            elif len(parts) == 2:
+                return float(parts[0]) * 60 + float(parts[1])
+        except:
+            return 0.0
+    elif isinstance(time_val, (int, float)):
+        return float(time_val)
+    return 0.0
+
+
+def load_master_data():
+    """누적 데이터베이스 파일 읽기"""
+    if os.path.exists(DB_FILE):
+        df = pd.read_csv(DB_FILE)
+        return df
+    return pd.DataFrame()
+
+
+# -----------------------------------------------------------------------------
+# 3. 사이드바 (데이터 업로드 및 누적 등록)
+# -----------------------------------------------------------------------------
+st.sidebar.title("⚙️ 주간 데이터 업로드")
+st.sidebar.caption("매주 출력되는 엑셀 파일을 올려주시면 자동으로 DB에 누적됩니다.")
+
+current_year = datetime.now().year
+current_week = int(datetime.now().isocalendar()[1])
+
+selected_year = st.sidebar.number_input("연도 선택", min_value=2024, max_value=2030, value=current_year)
+selected_week = st.sidebar.selectbox(
+    "주차 선택", 
+    [f"{i}주차" for i in range(1, 54)], 
+    index=max(0, current_week - 1)
+)
+
+uploaded_file = st.sidebar.file_uploader(
+    "주간 실적 엑셀 (.xlsx, .xls)", 
+    type=["xlsx", "xls"]
+)
+
+if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_container_width=True):
+    if uploaded_file is not None:
+        cleaned_df = parse_excel_file(uploaded_file)
+        
+        if cleaned_df is not None and not cleaned_df.empty:
+            # 주차 및 연도 정보 메타데이터 추가
+            cleaned_df.insert(0, "주차", selected_week)
+            cleaned_df.insert(0, "연도", selected_year)
+            cleaned_df["업로드일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 기존 DB 불러오기
+            master_df = load_master_data()
+
+            # 동일 연도/주차 데이터가 이미 존재하는 경우 덮어쓰기 로직 적용
+            if not master_df.empty:
+                already_exists = master_df[
+                    (master_df["연도"] == selected_year) & (master_df["주차"] == selected_week)
+                ]
+                if not already_exists.empty:
+                    master_df = master_df[
+                        ~((master_df["연도"] == selected_year) & (master_df["주차"] == selected_week))
+                    ]
+                    st.sidebar.info(f"💡 기존 {selected_year}년 {selected_week} 데이터를 신규 파일로 업데이트했습니다.")
+
+            # 병합 및 저장
+            updated_master = pd.concat([master_df, cleaned_df], ignore_index=True)
+            updated_master.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
+            st.sidebar.success(f"✅ {selected_year}년 {selected_week} 데이터 ({len(cleaned_df)}건) 누적 저장 완료!")
+    else:
+        st.sidebar.warning("업로드할 엑셀 파일을 먼저 선택해주세요.")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📌 사용 안내")
+st.sidebar.caption("""
+1. 엑셀 수식이나 '계' 행을 수정할 필요 없이 원본 그대로 올려주세요.
+2. 업로드 시 '연도'와 '주차'만 잘 선택해주시면 됩니다.
+3. 동일 주차를 다시 올리면 자동 덮어쓰기가 진행됩니다.
+""")
+
+
+# -----------------------------------------------------------------------------
+# 4. 메인 대시보드 화면
+# -----------------------------------------------------------------------------
+st.title("🏭 설비 종합 생산 실적 & 주간 추이 분석")
+
+master_df = load_master_data()
+
+if master_df.empty:
+    st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 주간 엑셀 파일을 업로드하여 시작해주세요.")
 else:
-    st.info("왼쪽 사이드바에서 조건을 설정한 후 [검색기 돌리기]를 누르면 실시간 랭킹 정렬이 시작됩니다.")
+    # --- 글로벌 필터 (연도, 주차, 설비) ---
+    col_f1, col_f2, col_f3 = st.columns([1, 2, 2])
+    
+    years = sorted(master_df["연도"].unique().tolist(), reverse=True)
+    with col_f1:
+        sel_year = st.selectbox("📆 연도", years)
+        
+    df_year = master_df[master_df["연도"] == sel_year]
+    
+    # 주차 정렬 (1주차 ~ 53주차)
+    available_weeks = df_year["주차"].unique().tolist()
+    available_weeks.sort(key=lambda x: int(x.replace("주차", "")))
+    
+    with col_f2:
+        sel_weeks = st.multiselect(
+            "🗓️ 조회 주차 선택 (복수 선택 시 누적 합산/비교)", 
+            options=available_weeks, 
+            default=available_weeks
+        )
+        
+    available_equipments = df_year["설비명"].unique().tolist()
+    with col_f3:
+        sel_equipments = st.multiselect(
+            "🔧 설비명 선택", 
+            options=available_equipments, 
+            default=available_equipments
+        )
+
+    # 필터 적용된 데이터셋
+    filtered_df = df_year[
+        (df_year["주차"].isin(sel_weeks)) & 
+        (df_year["설비명"].isin(sel_equipments))
+    ]
+
+    st.markdown("---")
+
+    if filtered_df.empty:
+        st.warning("선택한 필터 조건에 해당하는 데이터가 없습니다.")
+    else:
+        # --- 1. 상단 핵심 KPI 요약 카드 ---
+        total_possible = filtered_df["생산가능수"].sum()
+        total_actual = filtered_df["가동생산량"].sum()
+        total_defect = filtered_df["불량실적"].sum()
+        
+        # 합계 수량 기준 지표 재계산 (정확도 확보)
+        avg_yield = ((total_actual - total_defect) / total_actual * 100) if total_actual > 0 else 0
+        avg_oee = filtered_df["설비종합(%)"].mean() if "설비종합(%)" in filtered_df.columns else 0
+        avg_time_avail = filtered_df["시간가동률(%)"].mean() if "시간가동률(%)" in filtered_df.columns else 0
+        avg_perf = filtered_df["성능가동률(%)"].mean() if "성능가동률(%)" in filtered_df.columns else 0
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("총 생산가능수", f"{total_possible:,.0f} 개")
+        k2.metric("총 가동생산량", f"{total_actual:,.0f} 개")
+        k3.metric("총 불량수량", f"{total_defect:,.0f} 개")
+        k4.metric("평균 양품률", f"{avg_yield:.2f} %")
+        k5.metric("평균 설비종합효율(OEE)", f"{avg_oee:.2f} %")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # --- Tab 구성 ---
+        tab1, tab2, tab3 = st.tabs(["📊 주차별 / 설비별 트렌드 분석", "📋 상세 보고서 및 집계", "🗄️ 누적 DB 관리"])
+
+        # ---------------------------------------------------------------------
+        # TAB 1: 주차별 / 설비별 트렌드 차트
+        # ---------------------------------------------------------------------
+        with tab1:
+            col_chart1, col_chart2 = st.columns(2)
+
+            with col_chart1:
+                st.subheader("📈 주차별 / 설비별 가동생산량 추이")
+                df_grouped_prod = filtered_df.groupby(["주차", "설비명"])["가동생산량"].sum().reset_index()
+                
+                # 주차 정렬
+                df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(x.replace("주차", "")))
+                df_grouped_prod = df_grouped_prod.sort_values("주차_num")
+
+                fig_prod = px.bar(
+                    df_grouped_prod, 
+                    x="주차", 
+                    y="가동생산량", 
+                    color="설비명",
+                    barmode="group",
+                    text_auto=',.0f',
+                    title="주차별 설비 생산량 비교"
+                )
+                fig_prod.update_layout(xaxis_title="주차", yaxis_title="생산량 (개)", legend_title="설비명")
+                st.plotly_chart(fig_prod, use_container_width=True)
+
+            with col_chart2:
+                st.subheader("🎯 설비종합효율(OEE %) & 가동률 추이")
+                df_grouped_oee = filtered_df.groupby(["주차", "설비명"])[["시간가동률(%)", "성능가동률(%)", "설비종합(%)"]].mean().reset_index()
+                
+                df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(x.replace("주차", "")))
+                df_grouped_oee = df_grouped_oee.sort_values("주차_num")
+
+                fig_oee = px.line(
+                    df_grouped_oee,
+                    x="주차",
+                    y="설비종합(%)",
+                    color="설비명",
+                    markers=True,
+                    title="주차별 설비종합효율(OEE %) 변화"
+                )
+                fig_oee.update_layout(xaxis_title="주차", yaxis_title="설비종합효율 (%)", yaxis_range=[0, 100])
+                st.plotly_chart(fig_oee, use_container_width=True)
+
+            st.markdown("---")
+            
+            # 종합 가동 vs 비가동 요소 파이 차트
+            st.subheader("⚙️ 주요 가동 및 비가동수량 구성 비중")
+            c1, c2 = st.columns(2)
+            with c1:
+                prod_summary = pd.DataFrame({
+                    "구분": ["가동생산량", "비가동생산량", "불량실적"],
+                    "수량": [total_actual, filtered_df["비가동생산량"].sum(), total_defect]
+                })
+                fig_pie = px.pie(prod_summary, names="구분", values="수량", hole=0.4, title="전체 생산수량 구성비")
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with c2:
+                # 설비별 불량 현황
+                df_defect_eq = filtered_df.groupby("설비명")["불량실적"].sum().reset_index()
+                fig_defect = px.bar(df_defect_eq, x="설비명", y="불량실적", color="설비명", title="설비별 누적 불량 발생 수량")
+                st.plotly_chart(fig_defect, use_container_width=True)
+
+        # ---------------------------------------------------------------------
+        # TAB 2: 상세 보고서 및 집계 데이터
+        # ---------------------------------------------------------------------
+        with tab2:
+            st.subheader("📑 주차별 / 설비별 상세 실적 집계표")
+            
+            # 화면 출력에 필요한 컬럼 정리
+            display_cols = [
+                "연도", "주차", "설비코드", "설비명", "품번", "품명",
+                "생산가능수", "가동생산량", "비가동생산량", "불량실적",
+                "목표달성률(%)", "양품률(%)", "시간가동률(%)", "성능가동률(%)", "설비종합(%)"
+            ]
+            
+            # 실제 존재하는 컬럼만 선택
+            actual_display_cols = [c for c in display_cols if c in filtered_df.columns]
+
+            st.dataframe(
+                filtered_df[actual_display_cols].style.format({
+                    "생산가능수": "{:,.0f}",
+                    "가동생산량": "{:,.0f}",
+                    "비가동생산량": "{:,.0f}",
+                    "불량실적": "{:,.0f}",
+                    "목표달성률(%)": "{:.2f}%",
+                    "양품률(%)": "{:.2f}%",
+                    "시간가동률(%)": "{:.2f}%",
+                    "성능가동률(%)": "{:.2f}%",
+                    "설비종합(%)": "{:.2f}%"
+                }),
+                use_container_width=True,
+                height=450
+            )
+
+            # 엑셀 다운로드 버튼
+            csv_data = filtered_df[actual_display_cols].to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 현재 필터 데이터 엑셀(CSV) 다운로드",
+                data=csv_data,
+                file_name=f"설비실적보고서_{sel_year}_{'_'.join(sel_weeks)}.csv",
+                mime="text/csv"
+            )
+
+        # ---------------------------------------------------------------------
+        # TAB 3: 누적 DB 관리 (특정 주차 삭제 등)
+        # ---------------------------------------------------------------------
+        with tab3:
+            st.subheader("🗄️ 전체 누적 데이터베이스 관리")
+            st.caption("실수로 잘못 업로드했거나 관리 중 삭제가 필요한 주차를 선택하여 삭제할 수 있습니다.")
+            
+            db_summary = master_df.groupby(["연도", "주차"]).agg(
+                행수=("설비코드", "count"),
+                총가동생산량=("가동생산량", "sum"),
+                업로드일시=("업로드일시", "max")
+            ).reset_index()
+
+            st.dataframe(db_summary, use_container_width=True)
+
+            st.markdown("#### 🗑️ 특정 주차 데이터 삭제")
+            col_del1, col_del2, col_del3 = st.columns([2, 2, 2])
+            with col_del1:
+                del_year = st.selectbox("삭제할 연도", master_df["연도"].unique(), key="del_y")
+            with col_del2:
+                available_del_weeks = master_df[master_df["연도"] == del_year]["주차"].unique()
+                del_week = st.selectbox("삭제할 주차", available_del_weeks, key="del_w")
+            with col_del3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button(f"🔥 {del_year}년 {del_week} 삭제하기", type="primary"):
+                    new_master = master_df[
+                        ~((master_df["연도"] == del_year) & (master_df["주차"] == del_week))
+                    ]
+                    new_master.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
+                    st.success(f"{del_year}년 {del_week} 데이터가 성공적으로 삭제되었습니다.")
+                    st.rerun()
+```eof
+
+제공해주신 엑셀 표와 동일한 포맷을 자동으로 읽어들이고 정제하는 Streamlit 애플리케이션 및 설치 가이드 생성이 완료되었습니다.
+
+### 주요 반영 사항
+1. **헤더 자동 인식**: `작업수량`, `생산성분석`, `비가동` 등의 복합 헤더 속에서도 `설비코드` 행을 자동으로 탐지하여 정밀하게 읽어옵니다.
+2. **합계 행 자동 제외**: 중간의 `계` 행 및 최하단의 `대형(transfer)` 종합 행은 파이썬 내부에서 제외한 뒤 원천 데이터만 저장하므로 데이터 오염이나 이중 계산이 방지됩니다.
+3. **주차별/설비별 대시보드**: 누적된 데이터를 바탕으로 주차별 생산량 추이 차트, 설비종합효율(OEE %) 추이, KPI 카드, 엑셀 다운로드 기능이 통합 제공됩니다.
