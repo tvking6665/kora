@@ -4,6 +4,7 @@ import numpy as np
 import os
 from datetime import datetime
 import plotly.express as px
+import openpyxl
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 및 기본 설정
@@ -21,8 +22,26 @@ DB_FILE = "master_production_data.csv"
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     try:
-        # 첫 번째 행을 헤더로 읽기
-        df = pd.read_excel(uploaded_file, header=0)
+        # 1. openpyxl로 data_only=True로 읽어 수식 대신 값만 가져옴 (셀 오류 무시 처리)
+        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+        sheet = wb.active
+
+        data = []
+        for row in sheet.iter_rows(values_only=True):
+            # 셀 값 중 에러 문자열(#N/A, #VALUE! 등)이 발견되면 None(NaN)으로 안전하게 변환
+            cleaned_row = [
+                None if isinstance(val, str) and val.startswith("#") else val
+                for val in row
+            ]
+            data.append(cleaned_row)
+
+        if not data:
+            return None
+
+        # DataFrame 생성 (첫 번째 행을 헤더로 사용)
+        df = pd.DataFrame(data[1:], columns=data[0])
+
+        # 헤더 공백 및 줄바꿈 정제
         df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
 
         # 완전히 빈 행/열 제거
@@ -34,11 +53,12 @@ def parse_excel_file(uploaded_file):
                 mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
                 df = df[~mask]
 
-        # 숫자형 데이터 변환 (쉼표 제거)
+        # 숫자형 데이터 변환 (쉼표 제거 및 에러값 수치 변환 방어)
         for col in df.columns:
-            # 시간 포맷(HH:MM:SS)이나 문자열 명칭을 제외한 수치 컬럼 정제
             if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors='ignore')
+                # 문자열 정제 후 숫자 변환 (변환 불가능한 값은 coerce로 NaN 처리)
+                s = df[col].astype(str).str.replace(",", "").str.strip()
+                df[col] = pd.to_numeric(s, errors='coerce')
 
         return df
 
@@ -194,7 +214,6 @@ else:
         with tab1:
             st.subheader("📋 설비 기준 상세 실적 및 시간/LOSS 현황")
             
-            # 사용자 요청 지정 컬럼 리스트 정리
             req_cols = [
                 ("설비명", col_eq),
                 ("품명", col_item),
@@ -210,7 +229,6 @@ else:
                 ("정지LOSS", col_stop_loss)
             ]
             
-            # 존재하는 컬럼만 추출하여 가공
             select_cols = [c[1] for c in req_cols if c[1] in filtered_df.columns]
             rename_dict = {c[1]: c[0] for c in req_cols if c[1] in filtered_df.columns}
             
