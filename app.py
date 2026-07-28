@@ -4,7 +4,6 @@ import numpy as np
 import os
 from datetime import datetime
 import plotly.express as px
-import openpyxl
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 및 기본 설정
@@ -22,59 +21,44 @@ DB_FILE = "master_production_data.csv"
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     try:
-        # openpyxl 직접 로딩 대신 pandas 엔진 사용 (Nested.from_tree 오류 방지)
-        df = pd.read_excel(uploaded_file, header=0, engine='openpyxl')
+        # header없이 전체 읽어오기 (상단 빈 행 또는 타이틀 행 방어)
+        raw_df = pd.read_excel(uploaded_file, header=None, engine='openpyxl')
 
-        # 셀 내 수식 에러(#N/A, #VALUE! 등) 및 문자열 정제
+        # '설비명' 또는 '설비' 또는 '품번'이 들어간 행을 진짜 헤더 행으로 찾기
+        header_row_idx = 0
+        for idx, row in raw_df.iterrows():
+            row_str = " ".join(row.astype(str))
+            if any(k in row_str for k in ["설비명", "설비", "품번", "가동생산량"]):
+                header_row_idx = idx
+                break
+
+        # 헤더 설정 및 데이터 슬라이싱
+        df = raw_df.iloc[header_row_idx + 1:].copy()
+        df.columns = raw_df.iloc[header_row_idx].astype(str).values
+
+        # 컬럼명 공백/줄바꿈 정리
+        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
+
+        # 완전히 빈 행/열 및 Unnamed 열 제거
+        df = df.dropna(how="all").dropna(how="all", axis=1)
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
+
+        # 수식 오류 문자열(#N/A, #VALUE! 등)을 None(NaN)으로 치환
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].apply(
                     lambda x: None if isinstance(x, str) and x.startswith("#") else x
                 )
 
-        # 열 이름 공백 및 줄바꿈 정제
-        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
-
-        # 완전히 빈 행/열 제거
-        df = df.dropna(how="all").dropna(how="all", axis=1)
-
-        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링
+        # '계', '소계', '합계', 'transfer' 등 필터링
         for col in df.columns:
             if df[col].dtype == 'object':
                 mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
                 df = df[~mask]
 
-        # 수치형 데이터 변환 (쉼표 제거 및 변환 불가 값은 안전하게 NaN 처리)
+        # 수치형 컬럼 정제 및 안전한 변환 (쉼표 제거 후 numeric)
         for col in df.columns:
             if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
-                s = df[col].astype(str).str.replace(",", "").str.strip()
-                df[col] = pd.to_numeric(s, errors='coerce')
-
-        return df
-
-    except Exception as e:
-        st.error(f"엑셀 파일 처리 중 오류가 발생했습니다: {e}")
-        return None
-
-        # DataFrame 생성 (첫 번째 행을 헤더로 사용)
-        df = pd.DataFrame(data[1:], columns=data[0])
-
-        # 헤더 공백 및 줄바꿈 정제
-        df.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in df.columns]
-
-        # 완전히 빈 행/열 제거
-        df = df.dropna(how="all").dropna(how="all", axis=1)
-
-        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
-                df = df[~mask]
-
-        # 숫자형 데이터 변환 (쉼표 제거 및 에러값 수치 변환 방어)
-        for col in df.columns:
-            if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
-                # 문자열 정제 후 숫자 변환 (변환 불가능한 값은 coerce로 NaN 처리)
                 s = df[col].astype(str).str.replace(",", "").str.strip()
                 df[col] = pd.to_numeric(s, errors='coerce')
 
@@ -142,6 +126,8 @@ if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_c
             updated_master.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
             st.sidebar.success(f"✅ {selected_year}년 {selected_week} 데이터 ({len(cleaned_df)}건) 누적 저장 완료!")
             st.rerun()
+        else:
+            st.sidebar.error("엑셀 파일 파싱 실패: 적절한 데이터 표를 찾지 못했습니다.")
     else:
         st.sidebar.warning("업로드할 엑셀 파일을 먼저 선택해주세요.")
 
@@ -157,12 +143,12 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
-    # 컬럼 매핑 자동 탐지
+    # 엑셀 실 컬럼명 기반 유연 탐지
     col_eq = find_col(master_df, ["설비명", "설비"])
-    col_item = find_col(master_df, ["품명", "품번"])
+    col_item = find_col(master_df, ["품번", "품명"])
     col_possible = find_col(master_df, ["생산가능수", "생산가능"])
     col_actual = find_col(master_df, ["가동생산량", "가동생산", "생산량"])
-    col_defect = find_col(master_df, ["불량실적", "불량수", "불량"])
+    col_defect = find_col(master_df, ["불량실적", "불량수량", "불량"])
     col_yield = find_col(master_df, ["양품률", "양품율"])
     col_time_rate = find_col(master_df, ["시간가동률", "시간가동율"])
     col_perf_rate = find_col(master_df, ["성능가동률", "성능가동율"])
@@ -227,14 +213,14 @@ else:
         tab1, tab2, tab3 = st.tabs(["📌 설비별 상세 현황 보고서", "📊 주차별 / 설비별 트렌드 분석", "🗄️ 누적 DB 관리"])
 
         # ---------------------------------------------------------------------
-        # TAB 1: 요청하신 설비별 지정 항목 중심 보고서
+        # TAB 1: 지정 항목 중심 보고서
         # ---------------------------------------------------------------------
         with tab1:
             st.subheader("📋 설비 기준 상세 실적 및 시간/LOSS 현황")
             
             req_cols = [
                 ("설비명", col_eq),
-                ("품명", col_item),
+                ("품번", col_item),
                 ("가동생산량", col_actual),
                 ("불량실적", col_defect),
                 ("양품률(%)", col_yield),
@@ -247,8 +233,8 @@ else:
                 ("정지LOSS", col_stop_loss)
             ]
             
-            select_cols = [c[1] for c in req_cols if c[1] in filtered_df.columns]
-            rename_dict = {c[1]: c[0] for c in req_cols if c[1] in filtered_df.columns}
+            select_cols = [c[1] for c in req_cols if c[1] and c[1] in filtered_df.columns]
+            rename_dict = {c[1]: c[0] for c in req_cols if c[1] and c[1] in filtered_df.columns}
             
             view_df = filtered_df[select_cols].rename(columns=rename_dict)
             
