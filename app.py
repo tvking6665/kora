@@ -4,7 +4,6 @@ import numpy as np
 import os
 from datetime import datetime
 import plotly.express as px
-import plotly.graph_objects as go
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 및 기본 설정
@@ -22,57 +21,30 @@ DB_FILE = "master_production_data.csv"
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     """
-    엑셀 상단 헤더에 공백, 병합, 빈 셀이 섞여 있어도 
-    '설비코드' 단어를 유연하게 찾아 데이터를 정제하는 보완 함수
+     특정 '설비코드' 열에 의존하지 않고,
+    엑셀의 첫 번째 표 데이터 형태를 그대로 읽어와서 정제하는 단순/강력한 함수
     """
     try:
-        df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
+        # 첫 번째 행을 헤더(컬럼명)로 하여 엑셀 읽기
+        df = pd.read_excel(uploaded_file, header=0)
         
-        header_idx = None
-        for idx, row in df_raw.iterrows():
-            row_str = "".join([str(val).replace(" ", "") for val in row.values if pd.notna(val)])
-            if "설비코드" in row_str:
-                header_idx = idx
-                break
-        
-        if header_idx is None:
-            st.error("엑셀 파일 내에서 '설비코드' 항목을 찾지 못했습니다. 첫 번째 시트에 '설비코드' 열이 있는지 확인해주세요.")
-            return None
+        # 컬럼명의 공백 및 특수문자 정리
+        df.columns = [str(c).replace("\n", "").strip() for c in df.columns]
 
-        df = pd.read_excel(uploaded_file, header=header_idx)
-        df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
+        # 완전히 빈 행/열 제거
+        df = df.dropna(how="all").dropna(how="all", axis=1)
 
-        target_code_col = None
+        # '계', '소계', '합계', 'transfer' 들어간 행 자동 필터링 (데이터 오염 방지)
         for col in df.columns:
-            if "설비코드" in col:
-                target_code_col = col
-                break
-                
-        if not target_code_col:
-            st.error("'설비코드' 열의 이름을 인식하지 못했습니다.")
-            return None
+            # 문자열로 된 열에 대해서만 '계/소계/합계/transfer' 포함 여부 검사
+            if df[col].dtype == 'object':
+                mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
+                df = df[~mask]
 
-        df = df.rename(columns={target_code_col: "설비코드"})
-
-        df = df.dropna(subset=["설비코드"]).copy()
-        df = df[df["설비코드"].astype(str).str.strip() != ""]
-
-        code_str = df["설비코드"].astype(str)
-        df = df[~code_str.str.contains("transfer|대형|소계|합계|계", case=False, na=False)]
-        
+        # 주요 숫자 관련 열에 대해 쉼표(,) 제거 및 수치형 변환
         for col in df.columns:
-            if "품번" in col or "품명" in col:
-                df = df[~df[col].astype(str).str.contains("계|소계|합계", na=False)]
-
-        numeric_cols = [
-            "생산가능수", "가동생산량", "비가동생산량", "불량실적",
-            "목표달성률(%)", "양품률(%)", "시간가동률(%)", "성능가동률(%)", "설비종합(%)",
-            "이론CT", "실제CT"
-        ]
-        for col in numeric_cols:
-            for df_col in df.columns:
-                if col in df_col:
-                    df[df_col] = pd.to_numeric(df[df_col].astype(str).str.replace(",", ""), errors='coerce').fillna(0)
+            if any(keyword in col for keyword in ["수", "량", "실적", "률", "비율", "효율", "CT"]):
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0)
 
         return df
 
@@ -120,6 +92,7 @@ if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_c
 
             master_df = load_master_data()
 
+            # 동일 연도/주차 데이터가 존재할 경우 덮어쓰기
             if not master_df.empty:
                 already_exists = master_df[
                     (master_df["연도"] == selected_year) & (master_df["주차"] == selected_week)
@@ -140,8 +113,8 @@ if st.sidebar.button("📥 데이터 누적 저장하기", type="primary", use_c
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📌 사용 안내")
 st.sidebar.caption("""
-1. 엑셀 수식이나 '계' 행을 수정할 필요 없이 원본 그대로 올려주세요.
-2. 업로드 시 '연도'와 '주차'만 잘 선택해주시면 됩니다.
+1. 엑셀의 맨 위 1번째 줄이 열 이름(설비명, 품번 등)이 되도록 맞춰주세요.
+2. 업로드 시 '연도'와 '주차' 선택 후 [데이터 누적 저장하기]를 누르면 됩니다.
 """)
 
 
@@ -173,32 +146,35 @@ else:
             default=available_weeks
         )
         
-    eq_col = [c for c in df_year.columns if "설비명" in c]
-    eq_col_name = eq_col[0] if eq_col else "설비명"
-    available_equipments = df_year[eq_col_name].unique().tolist() if eq_col_name in df_year.columns else []
+    # 설비명 열 찾기 (설비명 컬럼이 있을 경우 필터 제공)
+    eq_cols = [c for c in df_year.columns if "설비" in c or "호기" in c]
+    eq_col_name = eq_cols[0] if eq_cols else None
     
-    with col_f3:
-        sel_equipments = st.multiselect(
-            "🔧 설비명 선택", 
-            options=available_equipments, 
-            default=available_equipments
-        )
-
-    filtered_df = df_year[
-        (df_year["주차"].isin(sel_weeks)) & 
-        (df_year[eq_col_name].isin(sel_equipments) if eq_col_name in df_year.columns else True)
-    ]
+    if eq_col_name:
+        available_equipments = df_year[eq_col_name].dropna().unique().tolist()
+        with col_f3:
+            sel_equipments = st.multiselect(
+                f"🔧 {eq_col_name} 선택", 
+                options=available_equipments, 
+                default=available_equipments
+            )
+        filtered_df = df_year[
+            (df_year["주차"].isin(sel_weeks)) & 
+            (df_year[eq_col_name].isin(sel_equipments))
+        ]
+    else:
+        filtered_df = df_year[df_year["주차"].isin(sel_weeks)]
 
     st.markdown("---")
 
     if filtered_df.empty:
         st.warning("선택한 필터 조건에 해당하는 데이터가 없습니다.")
     else:
-        # 주요 수량 검색
-        p_col = [c for c in filtered_df.columns if "생산가능수" in c]
-        a_col = [c for c in filtered_df.columns if "가동생산량" in c]
-        d_col = [c for c in filtered_df.columns if "불량실적" in c]
-        oee_col = [c for c in filtered_df.columns if "설비종합" in c]
+        # 주요 수량 및 비율 계산
+        p_col = [c for c in filtered_df.columns if "생산가능" in c]
+        a_col = [c for c in filtered_df.columns if "가동생산" in c or "생산량" in c]
+        d_col = [c for c in filtered_df.columns if "불량" in c]
+        oee_col = [c for c in filtered_df.columns if "종합" in c or "OEE" in c]
 
         total_possible = filtered_df[p_col[0]].sum() if p_col else 0
         total_actual = filtered_df[a_col[0]].sum() if a_col else 0
@@ -223,7 +199,7 @@ else:
 
             with col_chart1:
                 st.subheader("📈 주차별 / 설비별 가동생산량 추이")
-                if a_col and eq_col_name in filtered_df.columns:
+                if a_col and eq_col_name:
                     df_grouped_prod = filtered_df.groupby(["주차", eq_col_name])[a_col[0]].sum().reset_index()
                     df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(x.replace("주차", "")))
                     df_grouped_prod = df_grouped_prod.sort_values("주차_num")
@@ -237,12 +213,12 @@ else:
                         text_auto=',.0f',
                         title="주차별 설비 생산량 비교"
                     )
-                    fig_prod.update_layout(xaxis_title="주차", yaxis_title="생산량 (개)", legend_title="설비명")
+                    fig_prod.update_layout(xaxis_title="주차", yaxis_title="생산량 (개)")
                     st.plotly_chart(fig_prod, use_container_width=True)
 
             with col_chart2:
                 st.subheader("🎯 설비종합효율(OEE %) 추이")
-                if oee_col and eq_col_name in filtered_df.columns:
+                if oee_col and eq_col_name:
                     df_grouped_oee = filtered_df.groupby(["주차", eq_col_name])[oee_col[0]].mean().reset_index()
                     df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(x.replace("주차", "")))
                     df_grouped_oee = df_grouped_oee.sort_values("주차_num")
@@ -273,7 +249,7 @@ else:
         with tab3:
             st.subheader("🗄️ 전체 누적 데이터베이스 관리")
             db_summary = master_df.groupby(["연도", "주차"]).agg(
-                행수=("설비코드", "count"),
+                행수=(master_df.columns[2], "count"),
                 업로드일시=("업로드일시", "max")
             ).reset_index()
 
