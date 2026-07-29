@@ -17,62 +17,52 @@ st.set_page_config(
 DB_FILE = "master_production_data.csv"
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 전처리 및 유연한 컬럼 탐지 함수
+# 2. 데이터 전처리 (엑셀 수정 없이 100% 자동 파싱)
 # -----------------------------------------------------------------------------
 def parse_excel_file(uploaded_file):
     try:
-        # header없이 전체 읽어오기
+        # header=None으로 전체 로드하여 진짜 헤더 위치 자동 감지
         raw_df = pd.read_excel(uploaded_file, header=None, engine='openpyxl')
 
-        # '설비명' 또는 '설비' 또는 '품번'이 들어간 행을 진짜 헤더 행으로 찾기
+        # '설비명'이나 '품번'이 정확히 시작되는 행 찾기
         header_row_idx = 0
         for idx, row in raw_df.iterrows():
-            row_str = " ".join(str(val) for val in row.values if pd.notna(val))
-            if any(k in row_str for k in ["설비명", "설비", "품번", "가동생산량"]):
+            row_str = "".join(str(v).replace(" ", "") for v in row.values if pd.notna(v))
+            if "설비명" in row_str and "품번" in row_str:
                 header_row_idx = idx
                 break
 
-        # 헤더 설정 및 데이터 슬라이싱
+        # 헤더 아래 데이터만 슬라이싱
         df = raw_df.iloc[header_row_idx + 1:].copy()
-        raw_cols = raw_df.iloc[header_row_idx].astype(str).values
+        raw_cols = [str(c).replace("\n", "").replace(" ", "").strip() for c in raw_df.iloc[header_row_idx].values]
         
-        # 컬럼명 공백/줄바꿈 정리
-        cleaned_cols = [str(c).replace("\n", "").replace(" ", "").strip() for c in raw_cols]
-        
-        # 중복된 컬럼명이 있을 경우 이름 뒤에 _1, _2 붙여 고유하게 만들기
+        # 중복 컬럼 고유화
         seen = {}
         unique_cols = []
-        for c in cleaned_cols:
+        for c in raw_cols:
             if c in seen:
                 seen[c] += 1
                 unique_cols.append(f"{c}_{seen[c]}")
             else:
                 seen[c] = 0
                 unique_cols.append(c)
-        
         df.columns = unique_cols
 
-        # 완전히 빈 행/열 및 Unnamed 열 제거
+        # 빈 행/열 제거
         df = df.dropna(how="all").dropna(how="all", axis=1)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
 
-        # 수식 오류 문자열(#N/A, #VALUE! 등)을 None(NaN)으로 치환
+        # '계', '소계', '합계' 등 불필요 행 제거 (첫 번째 열 기준)
+        first_col = df.columns[0]
+        mask = df[first_col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
+        df = df[~mask]
+
+        # 수식 오류(#N/A 등) 무시 처리
         for col in df.columns:
             s = df[col].astype(str)
-            mask = s.str.startswith("#", na=False)
-            if mask.any():
-                df.loc[mask, col] = None
-
-        # '계', '소계', '합계', 'transfer' 등 필터링
-        for col in df.columns:
-            mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
-            df = df[~mask]
-
-        # 수치형 컬럼 정제 및 안전한 변환 (쉼표 제거 후 numeric)
-        for col in df.columns:
-            if any(k in col for k in ["수", "량", "실적", "률", "비율", "효율", "CT", "C/T"]):
-                s = df[col].astype(str).str.replace(",", "").str.strip()
-                df[col] = pd.to_numeric(s, errors='coerce')
+            mask_err = s.str.startswith("#", na=False)
+            if mask_err.any():
+                df.loc[mask_err, col] = None
 
         return df
 
@@ -85,14 +75,16 @@ def load_master_data():
         return pd.read_csv(DB_FILE)
     return pd.DataFrame()
 
-def find_col_robust(df, main_keywords, exclude_keywords=[]):
-    """중복 붙은 컬럼명(_1 등)까지 포함하여 키워드로 정확히 컬럼 탐지"""
-    for col in df.columns:
-        col_clean = str(col).split("_")[0] # 고유 번호 분리
-        # 메인 키워드가 포함되고 제외 키워드가 없는 것
-        if any(mk == col_clean or mk in col_clean for mk in main_keywords):
-            if not any(ek in col_clean for ek in exclude_keywords):
-                return col
+def match_target_column(df_cols, target_keyword):
+    """지정한 단어가 완벽히 일치하거나 가장 잘 맞아떨어지는 원본 열을 검색"""
+    for col in df_cols:
+        pure_name = col.split("_")[0] # 고유 번호 제거
+        if pure_name == target_keyword:
+            return col
+    for col in df_cols:
+        pure_name = col.split("_")[0]
+        if target_keyword in pure_name:
+            return col
     return None
 
 # -----------------------------------------------------------------------------
@@ -158,20 +150,21 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
-    # 강화된 컬럼 매핑 탐지
-    col_eq = find_col_robust(master_df, ["설비명", "설비"], exclude_keywords=["종합", "률", "율", "CT", "LOSS", "시간"])
-    col_item = find_col_robust(master_df, ["품번", "품명", "차종"])
-    col_possible = find_col_robust(master_df, ["생산가능수", "생산가능"])
-    col_actual = find_col_robust(master_df, ["가동생산량", "가동생산", "생산량"])
-    col_defect = find_col_robust(master_df, ["불량실적", "불량수량", "불량"])
-    col_yield = find_col_robust(master_df, ["양품률", "양품율"])
-    col_time_rate = find_col_robust(master_df, ["시간가동률", "시간가동율"])
-    col_perf_rate = find_col_robust(master_df, ["성능가동률", "성능가동율"])
-    col_oee = find_col_robust(master_df, ["설비종합", "OEE"])
-    col_ct = find_col_robust(master_df, ["실제CT", "실제C/T", "CT"])
-    col_load_time = find_col_robust(master_df, ["부하시간"])
-    col_work_time = find_col_robust(master_df, ["가동시간"])
-    col_stop_loss = find_col_robust(master_df, ["정지LOSS", "정지손실", "비가동"])
+    # 지정하신 빨간색 음영 타겟 항목에 1:1로 맞추기
+    col_eq = match_target_column(master_df.columns, "설비명")
+    col_item_num = match_target_column(master_df.columns, "품번")
+    col_item_name = match_target_column(master_df.columns, "품명")
+    col_actual = match_target_column(master_df.columns, "가동생산량")
+    col_defect = match_target_column(master_df.columns, "불량실적")
+    col_yield = match_target_column(master_df.columns, "양품률(%)") or match_target_column(master_df.columns, "양품률")
+    col_time_rate = match_target_column(master_df.columns, "시간가동률(%)") or match_target_column(master_df.columns, "시간가동률")
+    col_perf_rate = match_target_column(master_df.columns, "성능가동률(%)") or match_target_column(master_df.columns, "성능가동률")
+    col_oee = match_target_column(master_df.columns, "설비종합(%)") or match_target_column(master_df.columns, "설비종합")
+    col_ct = match_target_column(master_df.columns, "실제CT")
+    col_work_time = match_target_column(master_df.columns, "가동시간")
+    col_load_time = match_target_column(master_df.columns, "부하시간")
+    col_stop_loss = match_target_column(master_df.columns, "정지LOSS")
+    col_possible = match_target_column(master_df.columns, "생산가능수")
 
     # 필터 영역
     col_f1, col_f2, col_f3 = st.columns([1, 2, 2])
@@ -225,63 +218,54 @@ else:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        tab1, tab2, tab3 = st.tabs(["📌 설비별 상세 현황 보고서", "📊 주차별 / 설비별 트렌드 분석", "🗄️ 누적 DB 관리"])
+        tab1, tab2, tab3 = st.tabs(["📌 빨간색 지정 항목 상세 보고서", "📊 주차별 / 설비별 트렌드 분석", "🗄️ 누적 DB 관리"])
 
         # ---------------------------------------------------------------------
-        # TAB 1: 설비 및 실적 중심 상세 현황 보고서
+        # TAB 1: 요청해주신 빨간색 지정 항목 컬럼만 추출하여 디스플레이
         # ---------------------------------------------------------------------
         with tab1:
-            st.subheader("📋 설비 기준 상세 실적 및 시간/LOSS 현황")
+            st.subheader("📋 빨간색 지정 항목 중심 상세 실적 표")
             
-            # 지정 표시 항목 정의 (표시될 컬럼명, 매핑된 컬럼)
-            req_cols = [
+            # 빨간색 음영 지정 항목 순서
+            target_mapping = [
                 ("설비명", col_eq),
-                ("품번", col_item),
-                ("생산가능수", col_possible),
+                ("품번", col_item_num),
+                ("품명", col_item_name),
                 ("가동생산량", col_actual),
                 ("불량실적", col_defect),
                 ("양품률(%)", col_yield),
                 ("시간가동률(%)", col_time_rate),
                 ("성능가동률(%)", col_perf_rate),
                 ("설비종합(%)", col_oee),
-                ("실제 C/T", col_ct),
-                ("부하시간", col_load_time),
+                ("실제CT", col_ct),
                 ("가동시간", col_work_time),
+                ("부하시간", col_load_time),
                 ("정지LOSS", col_stop_loss)
             ]
             
-            select_cols = []
-            rename_dict = {}
-            for target_name, found_col in req_cols:
-                if found_col and found_col in filtered_df.columns and found_col not in select_cols:
-                    select_cols.append(found_col)
-                    rename_dict[found_col] = target_name
-
-            # 만약 매핑 매칭이 실패한 경우 원본 컬럼을 그대로 보여주는 방어 로직
-            if len(select_cols) < 3:
-                view_df = filtered_df.copy()
-                # 연도, 주차, 업로드일시 제외
-                drop_cols = [c for c in ["연도", "주차", "업로드일시"] if c in view_df.columns]
-                view_df = view_df.drop(columns=drop_cols)
-            else:
-                view_df = filtered_df[select_cols].rename(columns=rename_dict).copy()
+            selected_cols = []
+            rename_map = {}
+            for label, matched_col in target_mapping:
+                if matched_col and matched_col in filtered_df.columns:
+                    selected_cols.append(matched_col)
+                    rename_map[matched_col] = label
             
-            # PyArrow 변환 오류 방지: 컬럼명 중복 제거
-            view_df = view_df.loc[:, ~view_df.columns.duplicated()]
+            # 지정된 열들만 추출하여 이름 재설정
+            view_df = filtered_df[selected_cols].rename(columns=rename_map).copy()
             
-            # 데이터 가공 (None 값 처리)
+            # 데이터 빈값 깔끔히 정리
             for col in view_df.columns:
                 if view_df[col].dtype == 'object':
                     view_df[col] = view_df[col].astype(str).replace('nan', '').replace('None', '')
 
-            st.dataframe(view_df, use_container_width=True, height=500)
+            st.dataframe(view_df, use_container_width=True, height=550)
 
-            # 다운로드
+            # CSV 다운로드
             csv_data = view_df.to_csv(index=False, encoding="utf-8-sig")
             st.download_button(
                 label="📥 현재 화면 데이터 엑셀(CSV) 다운로드",
                 data=csv_data,
-                file_name=f"설비상세실적_{sel_year}_{'_'.join(sel_weeks)}.csv",
+                file_name=f"지정실적보고서_{sel_year}_{'_'.join(sel_weeks)}.csv",
                 mime="text/csv"
             )
 
