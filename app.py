@@ -39,7 +39,7 @@ def parse_excel_file(uploaded_file):
         # 컬럼명 공백/줄바꿈 정리
         cleaned_cols = [str(c).replace("\n", "").replace(" ", "").strip() for c in raw_cols]
         
-        # [중요] 중복된 컬럼명이 있을 경우 이름 뒤에 _1, _2 붙여 고유하게 만들기
+        # 중복된 컬럼명이 있을 경우 이름 뒤에 _1, _2 붙여 고유하게 만들기
         seen = {}
         unique_cols = []
         for c in cleaned_cols:
@@ -63,7 +63,7 @@ def parse_excel_file(uploaded_file):
             if mask.any():
                 df.loc[mask, col] = None
 
-        # '계', '소계', '합계', 'transfer' 등 필터링 (첫번째 컬럼 또는 문자열 컬럼 기준)
+        # '계', '소계', '합계', 'transfer' 등 필터링
         for col in df.columns:
             mask = df[col].astype(str).str.contains("계|소계|합계|transfer|대형\(transfer\)", case=False, na=False)
             df = df[~mask]
@@ -155,8 +155,8 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
-    # 엑셀 실 컬럼명 기반 유연 탐지
-    col_eq = find_col(master_df, ["설비명", "설비"])
+    # '설비명'을 최우선으로 탐지하여 수치가 지정되는 문제 방지
+    col_eq = find_col(master_df, ["설비명"]) or find_col(master_df, ["설비 구분", "설비"])
     col_item = find_col(master_df, ["품번", "품명"])
     col_possible = find_col(master_df, ["생산가능수", "생산가능"])
     col_actual = find_col(master_df, ["가동생산량", "가동생산", "생산량"])
@@ -245,11 +245,24 @@ else:
                 ("정지LOSS", col_stop_loss)
             ]
             
-            select_cols = [c[1] for c in req_cols if c[1] and c[1] in filtered_df.columns]
-            rename_dict = {c[1]: c[0] for c in req_cols if c[1] and c[1] in filtered_df.columns}
+            # 존재하는 컬럼 중 중복 없는 것만 선택
+            select_cols = []
+            rename_dict = {}
+            for target_name, found_col in req_cols:
+                if found_col and found_col in filtered_df.columns and found_col not in select_cols:
+                    select_cols.append(found_col)
+                    rename_dict[found_col] = target_name
             
-            view_df = filtered_df[select_cols].rename(columns=rename_dict)
+            view_df = filtered_df[select_cols].rename(columns=rename_dict).copy()
             
+            # PyArrow 변환 오류 방지: 컬럼명 중복 제거
+            view_df = view_df.loc[:, ~view_df.columns.duplicated()]
+            
+            # 모든 데이터를 문자열 및 숫자로 안전하게 가공하여 테이블 에러 차단
+            for col in view_df.columns:
+                if view_df[col].dtype == 'object':
+                    view_df[col] = view_df[col].astype(str).replace('nan', '')
+
             st.dataframe(view_df, use_container_width=True, height=500)
 
             # 다운로드
