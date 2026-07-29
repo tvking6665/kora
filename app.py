@@ -85,11 +85,14 @@ def load_master_data():
         return pd.read_csv(DB_FILE)
     return pd.DataFrame()
 
-def find_col(df, keywords):
-    """주어진 키워드가 포함된 컬럼명을 유연하게 검색하는 함수"""
+def find_col_robust(df, main_keywords, exclude_keywords=[]):
+    """중복 붙은 컬럼명(_1 등)까지 포함하여 키워드로 정확히 컬럼 탐지"""
     for col in df.columns:
-        if any(k in col for k in keywords):
-            return col
+        col_clean = str(col).split("_")[0] # 고유 번호 분리
+        # 메인 키워드가 포함되고 제외 키워드가 없는 것
+        if any(mk == col_clean or mk in col_clean for mk in main_keywords):
+            if not any(ek in col_clean for ek in exclude_keywords):
+                return col
     return None
 
 # -----------------------------------------------------------------------------
@@ -155,25 +158,20 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
-    # 엑셀 실 컬럼명 기반 유연 탐지 (우선순위 및 예외 조건 강화)
-    col_eq = None
-    for c in master_df.columns:
-        if ("설비명" in c or "설비" in c) and not any(k in c for k in ["종합", "률", "율", "CT", "C/T", "손실", "LOSS"]):
-            col_eq = c
-            break
-
-    col_item = find_col(master_df, ["품번", "품명"])
-    col_possible = find_col(master_df, ["생산가능수", "생산가능"])
-    col_actual = find_col(master_df, ["가동생산량", "가동생산", "생산량"])
-    col_defect = find_col(master_df, ["불량실적", "불량수량", "불량"])
-    col_yield = find_col(master_df, ["양품률", "양품율"])
-    col_time_rate = find_col(master_df, ["시간가동률", "시간가동율"])
-    col_perf_rate = find_col(master_df, ["성능가동률", "성능가동율"])
-    col_oee = find_col(master_df, ["설비종합", "OEE"])
-    col_ct = find_col(master_df, ["실제CT", "실제C/T", "CT"])
-    col_load_time = find_col(master_df, ["부하시간"])
-    col_work_time = find_col(master_df, ["가동시간"])
-    col_stop_loss = find_col(master_df, ["정지LOSS", "정지손실", "비가동"])
+    # 강화된 컬럼 매핑 탐지
+    col_eq = find_col_robust(master_df, ["설비명", "설비"], exclude_keywords=["종합", "률", "율", "CT", "LOSS", "시간"])
+    col_item = find_col_robust(master_df, ["품번", "품명", "차종"])
+    col_possible = find_col_robust(master_df, ["생산가능수", "생산가능"])
+    col_actual = find_col_robust(master_df, ["가동생산량", "가동생산", "생산량"])
+    col_defect = find_col_robust(master_df, ["불량실적", "불량수량", "불량"])
+    col_yield = find_col_robust(master_df, ["양품률", "양품율"])
+    col_time_rate = find_col_robust(master_df, ["시간가동률", "시간가동율"])
+    col_perf_rate = find_col_robust(master_df, ["성능가동률", "성능가동율"])
+    col_oee = find_col_robust(master_df, ["설비종합", "OEE"])
+    col_ct = find_col_robust(master_df, ["실제CT", "실제C/T", "CT"])
+    col_load_time = find_col_robust(master_df, ["부하시간"])
+    col_work_time = find_col_robust(master_df, ["가동시간"])
+    col_stop_loss = find_col_robust(master_df, ["정지LOSS", "정지손실", "비가동"])
 
     # 필터 영역
     col_f1, col_f2, col_f3 = st.columns([1, 2, 2])
@@ -230,14 +228,16 @@ else:
         tab1, tab2, tab3 = st.tabs(["📌 설비별 상세 현황 보고서", "📊 주차별 / 설비별 트렌드 분석", "🗄️ 누적 DB 관리"])
 
         # ---------------------------------------------------------------------
-        # TAB 1: 지정 항목 중심 보고서
+        # TAB 1: 설비 및 실적 중심 상세 현황 보고서
         # ---------------------------------------------------------------------
         with tab1:
             st.subheader("📋 설비 기준 상세 실적 및 시간/LOSS 현황")
             
+            # 지정 표시 항목 정의 (표시될 컬럼명, 매핑된 컬럼)
             req_cols = [
                 ("설비명", col_eq),
                 ("품번", col_item),
+                ("생산가능수", col_possible),
                 ("가동생산량", col_actual),
                 ("불량실적", col_defect),
                 ("양품률(%)", col_yield),
@@ -250,23 +250,29 @@ else:
                 ("정지LOSS", col_stop_loss)
             ]
             
-            # 존재하는 컬럼 중 중복 없는 것만 선택
             select_cols = []
             rename_dict = {}
             for target_name, found_col in req_cols:
                 if found_col and found_col in filtered_df.columns and found_col not in select_cols:
                     select_cols.append(found_col)
                     rename_dict[found_col] = target_name
-            
-            view_df = filtered_df[select_cols].rename(columns=rename_dict).copy()
+
+            # 만약 매핑 매칭이 실패한 경우 원본 컬럼을 그대로 보여주는 방어 로직
+            if len(select_cols) < 3:
+                view_df = filtered_df.copy()
+                # 연도, 주차, 업로드일시 제외
+                drop_cols = [c for c in ["연도", "주차", "업로드일시"] if c in view_df.columns]
+                view_df = view_df.drop(columns=drop_cols)
+            else:
+                view_df = filtered_df[select_cols].rename(columns=rename_dict).copy()
             
             # PyArrow 변환 오류 방지: 컬럼명 중복 제거
             view_df = view_df.loc[:, ~view_df.columns.duplicated()]
             
-            # 모든 데이터를 문자열 및 숫자로 안전하게 가공하여 테이블 에러 차단
+            # 데이터 가공 (None 값 처리)
             for col in view_df.columns:
                 if view_df[col].dtype == 'object':
-                    view_df[col] = view_df[col].astype(str).replace('nan', '')
+                    view_df[col] = view_df[col].astype(str).replace('nan', '').replace('None', '')
 
             st.dataframe(view_df, use_container_width=True, height=500)
 
@@ -280,7 +286,7 @@ else:
             )
 
         # ---------------------------------------------------------------------
-        # TAB 2: 주차별 추이 차트 (reset_index 중복 에러 완전 수정)
+        # TAB 2: 주차별 추이 차트
         # ---------------------------------------------------------------------
         with tab2:
             col_chart1, col_chart2 = st.columns(2)
@@ -291,7 +297,6 @@ else:
                     temp_df = filtered_df.copy()
                     temp_df[col_actual] = pd.to_numeric(temp_df[col_actual], errors='coerce')
                     
-                    # reset_index 대신 안전하게 그룹핑
                     df_grouped_prod = temp_df.groupby(["주차", col_eq], as_index=False)[col_actual].sum()
                     df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(str(x).replace("주차", "")))
                     df_grouped_prod = df_grouped_prod.sort_values("주차_num")
@@ -314,7 +319,6 @@ else:
                     temp_df = filtered_df.copy()
                     temp_df[col_oee] = pd.to_numeric(temp_df[col_oee], errors='coerce')
                     
-                    # reset_index 대신 안전하게 그룹핑
                     df_grouped_oee = temp_df.groupby(["주차", col_eq], as_index=False)[col_oee].mean()
                     df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(str(x).replace("주차", "")))
                     df_grouped_oee = df_grouped_oee.sort_values("주차_num")
