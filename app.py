@@ -155,8 +155,13 @@ master_df = load_master_data()
 if master_df.empty:
     st.info("👋 아직 누적된 데이터가 없습니다. 왼쪽 사이드바에서 엑셀 파일을 선택 후 [데이터 누적 저장하기] 버튼을 눌러주세요.")
 else:
-    # '설비명'을 최우선으로 탐지하여 수치가 지정되는 문제 방지
-    col_eq = find_col(master_df, ["설비명"]) or find_col(master_df, ["설비 구분", "설비"])
+    # 엑셀 실 컬럼명 기반 유연 탐지 (우선순위 및 예외 조건 강화)
+    col_eq = None
+    for c in master_df.columns:
+        if ("설비명" in c or "설비" in c) and not any(k in c for k in ["종합", "률", "율", "CT", "C/T", "손실", "LOSS"]):
+            col_eq = c
+            break
+
     col_item = find_col(master_df, ["품번", "품명"])
     col_possible = find_col(master_df, ["생산가능수", "생산가능"])
     col_actual = find_col(master_df, ["가동생산량", "가동생산", "생산량"])
@@ -275,7 +280,7 @@ else:
             )
 
         # ---------------------------------------------------------------------
-        # TAB 2: 주차별 추이 차트
+        # TAB 2: 주차별 추이 차트 (reset_index 중복 에러 완전 수정)
         # ---------------------------------------------------------------------
         with tab2:
             col_chart1, col_chart2 = st.columns(2)
@@ -283,8 +288,12 @@ else:
             with col_chart1:
                 st.subheader("📈 주차별 / 설비별 가동생산량 추이")
                 if col_actual and col_eq:
-                    df_grouped_prod = filtered_df.groupby(["주차", col_eq])[col_actual].apply(lambda x: pd.to_numeric(x, errors='coerce').sum()).reset_index()
-                    df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(x.replace("주차", "")))
+                    temp_df = filtered_df.copy()
+                    temp_df[col_actual] = pd.to_numeric(temp_df[col_actual], errors='coerce')
+                    
+                    # reset_index 대신 안전하게 그룹핑
+                    df_grouped_prod = temp_df.groupby(["주차", col_eq], as_index=False)[col_actual].sum()
+                    df_grouped_prod["주차_num"] = df_grouped_prod["주차"].apply(lambda x: int(str(x).replace("주차", "")))
                     df_grouped_prod = df_grouped_prod.sort_values("주차_num")
 
                     fig_prod = px.bar(
@@ -302,8 +311,12 @@ else:
             with col_chart2:
                 st.subheader("🎯 설비종합효율(OEE %) 추이")
                 if col_oee and col_eq:
-                    df_grouped_oee = filtered_df.groupby(["주차", col_eq])[col_oee].apply(lambda x: pd.to_numeric(x, errors='coerce').mean()).reset_index()
-                    df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(x.replace("주차", "")))
+                    temp_df = filtered_df.copy()
+                    temp_df[col_oee] = pd.to_numeric(temp_df[col_oee], errors='coerce')
+                    
+                    # reset_index 대신 안전하게 그룹핑
+                    df_grouped_oee = temp_df.groupby(["주차", col_eq], as_index=False)[col_oee].mean()
+                    df_grouped_oee["주차_num"] = df_grouped_oee["주차"].apply(lambda x: int(str(x).replace("주차", "")))
                     df_grouped_oee = df_grouped_oee.sort_values("주차_num")
 
                     fig_oee = px.line(
